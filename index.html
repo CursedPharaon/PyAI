@@ -79,12 +79,12 @@
         <button id="registerBtn">Зарегистрироваться</button>
         <div id="message" class="message"></div>
         <div class="info-box">
-            ⚡ После регистрации напишите в <a href="https://t.me/PyAI_bot" target="_blank">@PyAI_bot</a> для активации
+            ⚡ Регистрация на сайте создаёт заявку.<br />
+            Для активации подписки напишите <strong>@cursed_pharaon</strong>
         </div>
     </div>
 
     <script>
-        // Регистрация через API бота
         document.getElementById('registerBtn').addEventListener('click', async function() {
             const username = document.getElementById('username').value.trim();
             const messageEl = document.getElementById('message');
@@ -99,7 +99,6 @@
             this.textContent = '⏳ Регистрация...';
 
             try {
-                // Отправляем запрос на регистрацию в бот
                 const response = await fetch('/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -110,7 +109,7 @@
 
                 if (response.ok) {
                     messageEl.className = 'message success';
-                    messageEl.textContent = '✅ Регистрация успешна! Ожидайте активации.';
+                    messageEl.textContent = '✅ ' + text;
                     document.getElementById('username').value = '';
                 } else {
                     messageEl.className = 'message error';
