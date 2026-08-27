@@ -18,7 +18,10 @@ OPENROUTER_API_KEY = "sk-or-v1-025266fd20513f3d1c5edc4b4c59fa98b6c18d9b4b270760a
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "openrouter/free"
 
-USERS_FILE = "users.json"
+# Turso
+TURSO_URL = "https://pyai-cursedd.aws-eu-west-1.turso.io/v1/query"
+TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4Mzg2OTAsImlkIjoiMDFhMDQzN2QtMmQwMS03ZjZmLTk1MDAtNTUzZTI5YzFjNmI1Iiwia2lkIjoicWpYbEhLbElGQmJNX29uRDlaWEkyWFVfazVBT3h3X3JIMF9TcUZ6MmU0ZyIsInJpZCI6IjZhMzk2M2ZkLWYzM2QtNGE2MS1hMTQwLTQyYWU1ZTExZWQ5NCJ9.2pxIFQ_FkjhaNgqU6Adj6pEOaSxRx_rVI6Jc8SdAbvLMYbXWxsyhH8q78TZKcCQ51m7RiitFUzfOGUr-2UalAg"
+
 PORT = 10000
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -26,10 +29,115 @@ app = Flask(__name__)
 CORS(app)
 
 # ============================================
+# TURSO (данные не пропадают)
+# ============================================
+def turso_query(sql, params=[]):
+    payload = {
+        "requests": [{
+            "type": "execute",
+            "stmt": {"sql": sql, "args": params}
+        }]
+    }
+    try:
+        r = requests.post(
+            TURSO_URL,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {TURSO_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print(f"Turso error: {e}")
+        return None
+
+def init_db():
+    sql = """
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        user_id TEXT,
+        subscription_status TEXT DEFAULT 'inactive',
+        subscription_end TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    turso_query(sql)
+
+def create_user(username, user_id=None):
+    result = turso_query(
+        "INSERT INTO users (username, user_id, subscription_status) VALUES (?, ?, 'inactive')",
+        [username, user_id]
+    )
+    return result is not None
+
+def get_user_by_username(username):
+    r = turso_query("SELECT username, subscription_status, subscription_end FROM users WHERE username = ?", [username])
+    if not r or not r.get('results'):
+        return None
+    rows = r['results'][0].get('rows', [])
+    if not rows:
+        return None
+    return {"username": rows[0][0], "status": rows[0][1], "end_date": rows[0][2] if len(rows[0]) > 2 else None}
+
+def get_user_by_id(user_id):
+    r = turso_query("SELECT username, subscription_status, subscription_end FROM users WHERE user_id = ?", [str(user_id)])
+    if not r or not r.get('results'):
+        return None
+    rows = r['results'][0].get('rows', [])
+    if not rows:
+        return None
+    return {"username": rows[0][0], "status": rows[0][1], "end_date": rows[0][2] if len(rows[0]) > 2 else None}
+
+def get_user_status(username):
+    user = get_user_by_username(username)
+    if not user:
+        return None
+    
+    status = user["status"]
+    end_date = user["end_date"]
+    
+    if status == "active" and end_date:
+        if datetime.now().isoformat() > end_date:
+            turso_query("UPDATE users SET subscription_status = 'inactive' WHERE username = ?", [username])
+            return "inactive"
+    
+    return status
+
+def give_access(username, plan):
+    user = get_user_by_username(username)
+    if not user:
+        return False
+    
+    days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
+    if days is None:
+        turso_query("UPDATE users SET subscription_status = 'active', subscription_end = NULL WHERE username = ?", [username])
+    else:
+        end_date = (datetime.now() + timedelta(days=days)).isoformat()
+        turso_query("UPDATE users SET subscription_status = 'active', subscription_end = ? WHERE username = ?", [end_date, username])
+    return True
+
+def remove_access(username):
+    turso_query("UPDATE users SET subscription_status = 'inactive', subscription_end = NULL WHERE username = ?", [username])
+    return True
+
+def list_users():
+    r = turso_query("SELECT username, subscription_status, subscription_end FROM users")
+    if not r or not r.get('results'):
+        return []
+    rows = r['results'][0].get('rows', [])
+    return [(row[0], row[1], row[2] if len(row) > 2 else None) for row in rows]
+
+def check_user_exists(username):
+    return get_user_by_username(username) is not None
+
+# ============================================
 # АВТО-ПИНГ (ЧТОБЫ НЕ ЗАСЫПАЛ)
 # ============================================
 def keep_alive():
-    """Каждые 5 минут пингует самого себя, чтобы Render не засыпал"""
     url = f"http://localhost:{PORT}/ping"
     while True:
         try:
@@ -37,88 +145,7 @@ def keep_alive():
             print(f"🔄 Пинг в {datetime.now().strftime('%H:%M:%S')}")
         except Exception as e:
             print(f"❌ Ошибка пинга: {e}")
-        time.sleep(300)  # 5 минут
-
-# ============================================
-# РАБОТА С ПОЛЬЗОВАТЕЛЯМИ
-# ============================================
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        return {}
-    try:
-        with open(USERS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_users(users):
-    with open(USERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=2, ensure_ascii=False)
-
-def create_user(username):
-    users = load_users()
-    if username in users:
-        return False
-    users[username] = {
-        "subscription_status": "inactive",
-        "subscription_end": None,
-        "created_at": datetime.now().isoformat()
-    }
-    save_users(users)
-    return True
-
-def give_access(username, plan):
-    users = load_users()
-    if username not in users:
-        return False
-    
-    days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
-    if days is None:
-        users[username]["subscription_status"] = "active"
-        users[username]["subscription_end"] = None
-    else:
-        end_date = (datetime.now() + timedelta(days=days)).isoformat()
-        users[username]["subscription_status"] = "active"
-        users[username]["subscription_end"] = end_date
-    
-    save_users(users)
-    return True
-
-def remove_access(username):
-    users = load_users()
-    if username not in users:
-        return False
-    users[username]["subscription_status"] = "inactive"
-    users[username]["subscription_end"] = None
-    save_users(users)
-    return True
-
-def get_user_status(username):
-    users = load_users()
-    if username not in users:
-        return None
-    
-    user = users[username]
-    status = user.get("subscription_status", "inactive")
-    end_date = user.get("subscription_end")
-    
-    if status == "active" and end_date:
-        if datetime.now().isoformat() > end_date:
-            user["subscription_status"] = "inactive"
-            user["subscription_end"] = None
-            save_users(users)
-            return "inactive"
-    
-    return status
-
-def list_users():
-    users = load_users()
-    return [(username, data["subscription_status"], data.get("subscription_end")) 
-            for username, data in users.items()]
-
-def check_user_exists(username):
-    users = load_users()
-    return username in users
+        time.sleep(300)
 
 # ============================================
 # OPENROUTER
@@ -150,16 +177,11 @@ def ask_openrouter(prompt):
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
-    user_id = m.from_user.id
+    user_id = str(m.from_user.id)
+    user = get_user_by_id(user_id)
     
-    users = load_users()
-    username = None
-    for name, data in users.items():
-        if data.get("user_id") == user_id:
-            username = name
-            break
-    
-    if username:
+    if user:
+        username = user["username"]
         status = get_user_status(username)
         if status == "active":
             bot.reply_to(m, f"✅ Привет, {username}! Твоя подписка активна. Задавай любой вопрос!")
@@ -182,23 +204,17 @@ def register(m):
         return
     
     username = parts[1].strip()
-    user_id = m.from_user.id
+    user_id = str(m.from_user.id)
     
     if check_user_exists(username):
         bot.reply_to(m, f"❌ Имя '{username}' уже занято")
         return
     
-    users = load_users()
-    users[username] = {
-        "user_id": user_id,
-        "subscription_status": "inactive",
-        "subscription_end": None,
-        "created_at": datetime.now().isoformat()
-    }
-    save_users(users)
-    
-    bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации от администратора.\n\n📩 Для продления подписки напишите @cursed_pharaon")
-    bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (ID: {user_id})")
+    if create_user(username, user_id):
+        bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации от администратора.\n\n📩 Для продления подписки напишите @cursed_pharaon")
+        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (ID: {user_id})")
+    else:
+        bot.reply_to(m, "❌ Ошибка регистрации")
 
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
@@ -220,13 +236,17 @@ def give(m):
     plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
     bot.reply_to(m, f"✅ Доступ выдан на {plan_names[plan]} для {username}")
     
-    users = load_users()
-    user_id = users.get(username, {}).get("user_id")
-    if user_id:
-        try:
-            bot.send_message(user_id, f"🎉 {username}, твоя подписка активирована на {plan_names[plan]}! Задавай любые вопросы.")
-        except:
-            pass
+    user = get_user_by_username(username)
+    if user:
+        # Пытаемся найти user_id в базе
+        r = turso_query("SELECT user_id FROM users WHERE username = ?", [username])
+        if r and r.get('results'):
+            rows = r['results'][0].get('rows', [])
+            if rows and rows[0][0]:
+                try:
+                    bot.send_message(int(rows[0][0]), f"🎉 {username}, твоя подписка активирована на {plan_names[plan]}! Задавай любые вопросы.")
+                except:
+                    pass
 
 @bot.message_handler(commands=['removeaccess'])
 def remove(m):
@@ -281,9 +301,10 @@ def check(m):
 def stats(m):
     if m.from_user.id != ADMIN_ID:
         return
-    users = load_users()
-    total = len(users)
-    active = sum(1 for u in users.values() if u.get("subscription_status") == "active")
+    r = turso_query("SELECT COUNT(*) FROM users")
+    total = r['results'][0]['rows'][0][0] if r and r.get('results') else 0
+    r = turso_query("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
+    active = r['results'][0]['rows'][0][0] if r and r.get('results') else 0
     bot.reply_to(m, f"📊 Всего: {total}\n✅ Активных: {active}\n❌ Неактивных: {total - active}")
 
 @bot.message_handler(commands=['ask'])
@@ -299,19 +320,14 @@ def ask(m):
 
 @bot.message_handler(func=lambda m: True)
 def all_messages(m):
-    user_id = m.from_user.id
+    user_id = str(m.from_user.id)
+    user = get_user_by_id(user_id)
     
-    users = load_users()
-    username = None
-    for name, data in users.items():
-        if data.get("user_id") == user_id:
-            username = name
-            break
-    
-    if not username:
+    if not user:
         bot.reply_to(m, "❌ Ты не зарегистрирован. Используй /register Имя")
         return
     
+    username = user["username"]
     status = get_user_status(username)
     if status != "active":
         bot.reply_to(m, f"❌ Твоя подписка неактивна. Для продления напиши @cursed_pharaon")
@@ -330,12 +346,10 @@ def index():
 
 @app.route('/ping')
 def ping():
-    """Эндпоинт для авто-пинга"""
     return "OK", 200
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    """Чат на сайте"""
     data = request.json
     username = data.get('username', '').strip()
     message = data.get('message', '').strip()
@@ -383,13 +397,12 @@ def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
-    # Запускаем авто-пинг в отдельном потоке
+    init_db()
+    
     ping_thread = threading.Thread(target=keep_alive, daemon=True)
     ping_thread.start()
     
-    # Запускаем бота в отдельном потоке
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     
-    # Запускаем веб-сервер
     run_web()
