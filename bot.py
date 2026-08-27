@@ -18,9 +18,10 @@ OPENROUTER_API_KEY = "sk-or-v1-025266fd20513f3d1c5edc4b4c59fa98b6c18d9b4b270760a
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "openrouter/free"
 
-# Turso
-TURSO_URL = "https://pyai-cursedd.aws-eu-west-1.turso.io/v1/query"
-TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4Mzg2OTAsImlkIjoiMDFhMDQzN2QtMmQwMS03ZjZmLTk1MDAtNTUzZTI5YzFjNmI1Iiwia2lkIjoicWpYbEhLbElGQmJNX29uRDlaWEkyWFVfazVBT3h3X3JIMF9TcUZ6MmU0ZyIsInJpZCI6IjZhMzk2M2ZkLWYzM2QtNGE2MS1hMTQwLTQyYWU1ZTExZWQ5NCJ9.2pxIFQ_FkjhaNgqU6Adj6pEOaSxRx_rVI6Jc8SdAbvLMYbXWxsyhH8q78TZKcCQ51m7RiitFUzfOGUr-2UalAg"
+# Используем /tmp (всегда есть права на запись)
+DATA_DIR = '/tmp/pyai_data'
+os.makedirs(DATA_DIR, exist_ok=True)
+USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 
 PORT = 10000
 
@@ -29,123 +30,97 @@ app = Flask(__name__)
 CORS(app)
 
 # ============================================
-# TURSO (данные не пропадают)
+# РАБОТА С ПОЛЬЗОВАТЕЛЯМИ
 # ============================================
-def turso_query(sql, params=[]):
-    payload = {
-        "requests": [{
-            "type": "execute",
-            "stmt": {"sql": sql, "args": params}
-        }]
-    }
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return {}
     try:
-        r = requests.post(
-            TURSO_URL,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {TURSO_TOKEN}",
-                "Content-Type": "application/json"
-            },
-            timeout=10
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print(f"Turso error: {e}")
-        return None
+        with open(USERS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {}
 
-def init_db():
-    sql = """
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        user_id TEXT,
-        subscription_status TEXT DEFAULT 'inactive',
-        subscription_end TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-    turso_query(sql)
+def save_users(users):
+    with open(USERS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(users, f, indent=2, ensure_ascii=False)
 
 def create_user(username, user_id=None):
-    result = turso_query(
-        "INSERT INTO users (username, user_id, subscription_status) VALUES (?, ?, 'inactive')",
-        [username, user_id]
-    )
-    return result is not None
+    users = load_users()
+    if username in users:
+        return False
+    users[username] = {
+        "user_id": user_id,
+        "subscription_status": "inactive",
+        "subscription_end": None,
+        "created_at": datetime.now().isoformat()
+    }
+    save_users(users)
+    return True
 
 def get_user_by_username(username):
-    r = turso_query("SELECT username, subscription_status, subscription_end FROM users WHERE username = ?", [username])
-    if not r or not r.get('results'):
-        return None
-    rows = r['results'][0].get('rows', [])
-    if not rows:
-        return None
-    return {"username": rows[0][0], "status": rows[0][1], "end_date": rows[0][2] if len(rows[0]) > 2 else None}
+    users = load_users()
+    return users.get(username)
 
 def get_user_by_id(user_id):
-    r = turso_query("SELECT username, subscription_status, subscription_end FROM users WHERE user_id = ?", [str(user_id)])
-    if not r or not r.get('results'):
-        return None
-    rows = r['results'][0].get('rows', [])
-    if not rows:
-        return None
-    return {"username": rows[0][0], "status": rows[0][1], "end_date": rows[0][2] if len(rows[0]) > 2 else None}
+    users = load_users()
+    for username, data in users.items():
+        if str(data.get("user_id")) == str(user_id):
+            return {"username": username, "data": data}
+    return None
 
 def get_user_status(username):
-    user = get_user_by_username(username)
-    if not user:
+    users = load_users()
+    if username not in users:
         return None
     
-    status = user["status"]
-    end_date = user["end_date"]
+    user = users[username]
+    status = user.get("subscription_status", "inactive")
+    end_date = user.get("subscription_end")
     
     if status == "active" and end_date:
         if datetime.now().isoformat() > end_date:
-            turso_query("UPDATE users SET subscription_status = 'inactive' WHERE username = ?", [username])
+            user["subscription_status"] = "inactive"
+            user["subscription_end"] = None
+            save_users(users)
             return "inactive"
     
     return status
 
 def give_access(username, plan):
-    user = get_user_by_username(username)
-    if not user:
+    users = load_users()
+    if username not in users:
         return False
     
     days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
     if days is None:
-        turso_query("UPDATE users SET subscription_status = 'active', subscription_end = NULL WHERE username = ?", [username])
+        users[username]["subscription_status"] = "active"
+        users[username]["subscription_end"] = None
     else:
         end_date = (datetime.now() + timedelta(days=days)).isoformat()
-        turso_query("UPDATE users SET subscription_status = 'active', subscription_end = ? WHERE username = ?", [end_date, username])
+        users[username]["subscription_status"] = "active"
+        users[username]["subscription_end"] = end_date
+    
+    save_users(users)
     return True
 
 def remove_access(username):
-    turso_query("UPDATE users SET subscription_status = 'inactive', subscription_end = NULL WHERE username = ?", [username])
+    users = load_users()
+    if username not in users:
+        return False
+    users[username]["subscription_status"] = "inactive"
+    users[username]["subscription_end"] = None
+    save_users(users)
     return True
 
 def list_users():
-    r = turso_query("SELECT username, subscription_status, subscription_end FROM users")
-    if not r or not r.get('results'):
-        return []
-    rows = r['results'][0].get('rows', [])
-    return [(row[0], row[1], row[2] if len(row) > 2 else None) for row in rows]
+    users = load_users()
+    return [(username, data["subscription_status"], data.get("subscription_end")) 
+            for username, data in users.items()]
 
 def check_user_exists(username):
-    return get_user_by_username(username) is not None
-
-# ============================================
-# АВТО-ПИНГ (ЧТОБЫ НЕ ЗАСЫПАЛ)
-# ============================================
-def keep_alive():
-    url = f"http://localhost:{PORT}/ping"
-    while True:
-        try:
-            requests.get(url, timeout=5)
-            print(f"🔄 Пинг в {datetime.now().strftime('%H:%M:%S')}")
-        except Exception as e:
-            print(f"❌ Ошибка пинга: {e}")
-        time.sleep(300)
+    users = load_users()
+    return username in users
 
 # ============================================
 # OPENROUTER
@@ -236,17 +211,13 @@ def give(m):
     plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
     bot.reply_to(m, f"✅ Доступ выдан на {plan_names[plan]} для {username}")
     
-    user = get_user_by_username(username)
-    if user:
-        # Пытаемся найти user_id в базе
-        r = turso_query("SELECT user_id FROM users WHERE username = ?", [username])
-        if r and r.get('results'):
-            rows = r['results'][0].get('rows', [])
-            if rows and rows[0][0]:
-                try:
-                    bot.send_message(int(rows[0][0]), f"🎉 {username}, твоя подписка активирована на {plan_names[plan]}! Задавай любые вопросы.")
-                except:
-                    pass
+    users = load_users()
+    user_id = users.get(username, {}).get("user_id")
+    if user_id:
+        try:
+            bot.send_message(int(user_id), f"🎉 {username}, твоя подписка активирована на {plan_names[plan]}! Задавай любые вопросы.")
+        except:
+            pass
 
 @bot.message_handler(commands=['removeaccess'])
 def remove(m):
@@ -301,10 +272,9 @@ def check(m):
 def stats(m):
     if m.from_user.id != ADMIN_ID:
         return
-    r = turso_query("SELECT COUNT(*) FROM users")
-    total = r['results'][0]['rows'][0][0] if r and r.get('results') else 0
-    r = turso_query("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
-    active = r['results'][0]['rows'][0][0] if r and r.get('results') else 0
+    users = load_users()
+    total = len(users)
+    active = sum(1 for u in users.values() if u.get("subscription_status") == "active")
     bot.reply_to(m, f"📊 Всего: {total}\n✅ Активных: {active}\n❌ Неактивных: {total - active}")
 
 @bot.message_handler(commands=['ask'])
@@ -369,21 +339,29 @@ def chat():
 
 @app.route('/register', methods=['POST'])
 def register_web():
-    username = request.form.get('username', '').strip()
-    if not username:
-        return "Введите имя", 400
-    
-    if len(username) < 2:
-        return "Имя должно быть не менее 2 символов", 400
-    
-    if check_user_exists(username):
-        return "Пользователь с таким именем уже существует", 400
-    
-    if create_user(username):
-        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (зарегистрирован через сайт)")
-        return "Регистрация успешна! Ожидайте активации администратора.", 200
-    else:
-        return "Ошибка регистрации", 500
+    try:
+        username = request.form.get('username', '').strip()
+        print(f"📝 Попытка регистрации: {username}")
+        
+        if not username:
+            return "Введите имя", 400
+        
+        if len(username) < 2:
+            return "Имя должно быть не менее 2 символов", 400
+        
+        if check_user_exists(username):
+            return "Пользователь с таким именем уже существует", 400
+        
+        if create_user(username):
+            bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (зарегистрирован через сайт)")
+            print(f"✅ Регистрация успешна: {username}")
+            return "Регистрация успешна! Ожидайте активации администратора.", 200
+        else:
+            print(f"❌ Ошибка создания пользователя: {username}")
+            return "Ошибка регистрации", 500
+    except Exception as e:
+        print(f"❌ Исключение: {e}")
+        return f"Ошибка: {str(e)}", 500
 
 # ============================================
 # ЗАПУСК
@@ -397,10 +375,7 @@ def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
-    init_db()
-    
-    ping_thread = threading.Thread(target=keep_alive, daemon=True)
-    ping_thread.start()
+    print(f"📂 Данные сохраняются в: {USERS_FILE}")
     
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
