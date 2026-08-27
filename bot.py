@@ -1,11 +1,10 @@
 import telebot
-import json
-import os
-from datetime import datetime, timedelta
 import requests
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
+import json
+from datetime import datetime, timedelta
+from flask import Flask
 import threading
+import os
 import time
 
 # ============================================
@@ -18,85 +17,161 @@ OPENROUTER_API_KEY = "sk-or-v1-025266fd20513f3d1c5edc4b4c59fa98b6c18d9b4b270760a
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "openrouter/free"
 
-# Файл с данными
-USERS_FILE = "users.json"
+# ============================================
+# SUPABASE (ТВОИ ДАННЫЕ)
+# ============================================
+SUPABASE_URL = "https://sycmhhibqeagzzfvjsdp.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN5Y21oaWlicWVhZ3p6ZnZqc2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4NTQ4ODAsImV4cCI6MjEwMzQzMDg4MH0.-isC-BKW5zvywzxTQ_IvUKBdWAONrIVocHbDsiYFaGk"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
-CORS(app)
 
 # ============================================
-# РАБОТА С JSON
+# СОЗДАНИЕ ТАБЛИЦЫ (автоматически)
 # ============================================
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        return {}
+def init_database():
+    """Создаёт таблицу users, если её нет"""
     try:
-        with open(USERS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return {}
+        # Проверяем, существует ли таблица
+        url = f"{SUPABASE_URL}/rest/v1/users?limit=1"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
+        }
+        r = requests.get(url, headers=headers, timeout=10)
+        
+        if r.status_code == 404:
+            # Таблицы нет — создаём через SQL (не работает через REST)
+            print("⚠️ Таблица users не найдена. Создайте её вручную в Supabase SQL Editor:")
+            print("""
+CREATE TABLE users (
+    id BIGSERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    user_id TEXT NOT NULL,
+    status TEXT DEFAULT 'inactive',
+    end_date TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+            """)
+        else:
+            print("✅ Таблица users существует")
+    except Exception as e:
+        print(f"Ошибка проверки таблицы: {e}")
 
-def save_users(users):
-    with open(USERS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=2, ensure_ascii=False)
+# ============================================
+# РАБОТА С SUPABASE
+# ============================================
+def get_user_by_id(user_id):
+    """Получает пользователя по Telegram ID"""
+    url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=*"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if data:
+            return data[0]["username"], data[0]
+        return None, None
+    except Exception as e:
+        print(f"get_user_by_id error: {e}")
+        return None, None
 
 def create_user(username, user_id):
-    users = load_users()
-    if username in users:
-        return False
-    users[username] = {
+    """Создаёт нового пользователя"""
+    url = f"{SUPABASE_URL}/rest/v1/users"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+    data = {
+        "username": username,
         "user_id": str(user_id),
         "status": "inactive",
         "end_date": None
     }
-    save_users(users)
-    return True
-
-def get_user_by_id(user_id):
-    users = load_users()
-    for name, data in users.items():
-        if data.get("user_id") == str(user_id):
-            return name, data
-    return None, None
+    try:
+        r = requests.post(url, json=data, headers=headers, timeout=10)
+        print(f"create_user status: {r.status_code}, response: {r.text}")
+        return r.status_code in [200, 201]
+    except Exception as e:
+        print(f"create_user error: {e}")
+        return False
 
 def give_access(username, plan):
-    users = load_users()
-    if username not in users:
-        return False
-    
+    """Выдаёт доступ"""
     days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
-    if days is None:
-        users[username]["status"] = "active"
-        users[username]["end_date"] = None
-    else:
+    end_date = None
+    if days:
         end_date = (datetime.now() + timedelta(days=days)).isoformat()
-        users[username]["status"] = "active"
-        users[username]["end_date"] = end_date
     
-    save_users(users)
-    return True
+    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {"status": "active", "end_date": end_date}
+    try:
+        r = requests.patch(url, json=data, headers=headers, timeout=10)
+        print(f"give_access status: {r.status_code}")
+        return r.status_code == 200
+    except Exception as e:
+        print(f"give_access error: {e}")
+        return False
 
 def get_status(username):
-    users = load_users()
-    if username not in users:
+    """Проверяет статус подписки"""
+    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=status,end_date"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if not data:
+            return None
+        
+        status = data[0].get("status", "inactive")
+        end_date = data[0].get("end_date")
+        
+        if status == "active" and end_date:
+            if datetime.now().isoformat() > end_date:
+                # Отключаем, если срок истёк
+                update_url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}"
+                headers_update = {
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json"
+                }
+                requests.patch(update_url, json={"status": "inactive", "end_date": None}, headers=headers_update, timeout=10)
+                return "inactive"
+        return status
+    except Exception as e:
+        print(f"get_status error: {e}")
         return None
-    
-    status = users[username].get("status", "inactive")
-    end_date = users[username].get("end_date")
-    
-    if status == "active" and end_date:
-        if datetime.now().isoformat() > end_date:
-            users[username]["status"] = "inactive"
-            users[username]["end_date"] = None
-            save_users(users)
-            return "inactive"
-    
-    return status
 
 def list_users():
-    users = load_users()
-    return [(name, data["status"], data.get("end_date")) for name, data in users.items()]
+    """Список всех пользователей"""
+    url = f"{SUPABASE_URL}/rest/v1/users?select=username,status,end_date&order=created_at.asc"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return [(item["username"], item["status"], item.get("end_date")) for item in data]
+    except Exception as e:
+        print(f"list_users error: {e}")
+        return []
 
 # ============================================
 # OPENROUTER
@@ -155,7 +230,7 @@ def register(m):
         bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации.")
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
-        bot.reply_to(m, "❌ Имя занято")
+        bot.reply_to(m, "❌ Имя занято или ошибка БД")
 
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
@@ -211,39 +286,17 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-СЕРВЕР (для Render)
 # ============================================
 @app.route('/')
 def index():
-    return "PyAI Bot is running!"
+    users = list_users()
+    return f"PyAI Bot is running! 👥 Users: {len(users)}"
 
 @app.route('/ping')
 def ping():
     return "OK", 200
 
-@app.route('/register-web', methods=['POST'])
-def register_web():
-    try:
-        username = request.form.get('username', '').strip()
-        user_id = request.form.get('user_id', '').strip()
-        
-        if not username:
-            return "Введите имя", 400
-        
-        if len(username) < 2:
-            return "Имя должно быть не менее 2 символов", 400
-        
-        if create_user(username, user_id):
-            bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (через сайт)")
-            return "Регистрация успешна! Ожидайте активации.", 200
-        else:
-            return "Пользователь с таким именем уже существует", 400
-    except Exception as e:
-        return f"Ошибка: {str(e)}", 500
-
-# ============================================
-# ЗАПУСК
-# ============================================
 def run_bot():
     print("🤖 Бот запущен!")
     bot.polling(non_stop=True)
@@ -253,10 +306,13 @@ def run_web():
     print(f"🌐 Веб-сервер запущен на порту {port}")
     app.run(host='0.0.0.0', port=port)
 
+# ============================================
+# ЗАПУСК
+# ============================================
 if __name__ == "__main__":
-    # Запускаем бота в отдельном потоке
+    print("🚀 Запуск PyAI бота...")
+    init_database()
+    
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
-    
-    # Запускаем веб-сервер в главном потоке
     run_web()
