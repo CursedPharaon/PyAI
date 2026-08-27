@@ -1,7 +1,8 @@
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-import libsql_experimental as libsql
+import libsql_client as libsql
+conn = libsql.create_client(sync_url=DB_URL, auth_token=DB_TOKEN)
 from datetime import datetime, timedelta
 import http.server
 import socketserver
