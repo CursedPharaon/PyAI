@@ -8,7 +8,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 # ============================================
 # НАСТРОЙКИ
 # ============================================
-TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"  # ВСТАВЬ СВОЙ ТОКЕН
+TELEGRAM_TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"  # ВСТАВЬ СВОЙ ТОКЕН
 ADMIN_ID = 8549857532
 
 OPENROUTER_API_KEY = "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"
@@ -22,7 +22,7 @@ TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4
 logging.basicConfig(level=logging.INFO)
 
 # ============================================
-# ФУНКЦИИ РАБОТЫ С TURSO ЧЕРЕЗ HTTP
+# ФУНКЦИИ РАБОТЫ С TURSO ЧЕРЕЗ HTTP API
 # ============================================
 def turso_query(sql, params=None):
     """Выполняет SQL-запрос к Turso через HTTP API"""
@@ -32,14 +32,21 @@ def turso_query(sql, params=None):
         "Content-Type": "application/json"
     }
     
-    # Параметры для запроса
-    data = {
-        "sql": sql,
-        "params": params or {}
+    # Формат запроса для Turso HTTP API
+    payload = {
+        "requests": [
+            {
+                "type": "execute",
+                "stmt": {
+                    "sql": sql,
+                    "args": params or []
+                }
+            }
+        ]
     }
     
     try:
-        response = requests.post(url, json=data, headers=headers, timeout=10)
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -47,7 +54,6 @@ def turso_query(sql, params=None):
         return None
 
 def init_db():
-    """Создаёт таблицу пользователей"""
     sql = """
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -312,9 +318,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ЗАПУСК
 # ============================================
 def main():
-    # Инициализируем БД
     init_db()
-    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
