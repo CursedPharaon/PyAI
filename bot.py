@@ -1,12 +1,8 @@
-
-
-
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from libsql_client import create_client
 from datetime import datetime, timedelta
-import os
 import json
 import urllib.request
 import urllib.error
@@ -14,7 +10,7 @@ import urllib.error
 # ============================================
 # НАСТРОЙКИ
 # ============================================
-TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
+TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"  # Получить у @BotFather
 ADMIN_ID = 8549857532
 
 OPENROUTER_API_KEY = "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"
@@ -25,9 +21,12 @@ DB_URL = "libsql://pyai-cursedd.aws-eu-west-1.turso.io"
 DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4Mzg2OTAsImlkIjoiMDFhMDQzN2QtMmQwMS03ZjZmLTk1MDAtNTUzZTI5YzFjNmI1Iiwia2lkIjoicWpYbEhLbElGQmJNX29uRDlaWEkyWFVfazVBT3h3X3JIMF9TcUZ6MmU0ZyIsInJpZCI6IjZhMzk2M2ZkLWYzM2QtNGE2MS1hMTQwLTQyYWU1ZTExZWQ5NCJ9.2pxIFQ_FkjhaNgqU6Adj6pEOaSxRx_rVI6Jc8SdAbvLMYbXWxsyhH8q78TZKcCQ51m7RiitFUzfOGUr-2UalAg"
 
 # ============================================
-# ПОДКЛЮЧЕНИЕ К БАЗЕ
+# ПОДКЛЮЧЕНИЕ К БАЗЕ (ИСПРАВЛЕНО)
 # ============================================
-conn = create_client(sync_url=DB_URL, auth_token=DB_TOKEN)
+conn = create_client(
+    url=DB_URL,           # вместо sync_url используем url
+    auth_token=DB_TOKEN
+)
 
 # Создаём таблицы
 conn.execute("""
@@ -182,7 +181,7 @@ async def give_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     if not check_user_exists(email):
-        await update.message.reply_text(f"❌ Пользователь {email} не найден. Сначала зарегистрируйтесь на сайте.")
+        await update.message.reply_text(f"❌ Пользователь {email} не найден.")
         return
     
     give_access(email, plan)
@@ -211,13 +210,13 @@ async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     users = list_users()
     if not users:
-        await update.message.reply_text("📭 Нет зарегистрированных пользователей")
+        await update.message.reply_text("📭 Нет пользователей")
         return
     
-    text = "📋 Список пользователей:\n\n"
+    text = "📋 Список:\n\n"
     for email, status, end_date in users:
         status_emoji = "✅" if status == 'active' else "❌"
-        end_str = f"до {end_date[:10]}" if end_date else "бессрочно" if status == 'active' else "-"
+        end_str = f"до {end_date[:10]}" if end_date else "бессрочно"
         text += f"{status_emoji} {email} | {status} {end_str}\n"
     
     await update.message.reply_text(text[:4000])
@@ -250,7 +249,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"📊 Статистика:\n"
-        f"👥 Всего пользователей: {total}\n"
+        f"👥 Всего: {total}\n"
         f"✅ Активных: {active}\n"
         f"❌ Неактивных: {total - active}"
     )
@@ -267,7 +266,6 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     question = ' '.join(context.args)
     await update.message.reply_text("🤔 Думаю...")
-    
     response = ask_openrouter(question)
     await update.message.reply_text(f"🧠 PyAI:\n{response[:4000]}")
 
