@@ -4,7 +4,8 @@ import json
 import time
 import threading
 from datetime import datetime, timedelta
-from flask import Flask
+from flask import Flask, request, jsonify, send_file
+import hashlib
 
 # ============================================
 # НАСТРОЙКИ
@@ -67,16 +68,16 @@ def save_users(users):
         print(f"Ошибка сохранения: {e}")
         return False
 
-def get_user(username):
-    users = load_users()
-    return users.get(username)
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-def create_user(username, user_id):
+def create_user(username, password, user_id=None):
     users = load_users()
     if username in users:
         return False
     users[username] = {
-        "user_id": str(user_id),
+        "password": hash_password(password),
+        "user_id": str(user_id) if user_id else None,
         "status": "inactive",
         "plan": None,
         "end_date": None,
@@ -84,12 +85,22 @@ def create_user(username, user_id):
     }
     return save_users(users)
 
+def get_user_by_username(username):
+    users = load_users()
+    return users.get(username)
+
 def get_user_by_id(user_id):
     users = load_users()
     for username, data in users.items():
         if data.get("user_id") == str(user_id):
             return username, data
     return None, None
+
+def check_password(username, password):
+    user = get_user_by_username(username)
+    if not user:
+        return False
+    return user.get("password") == hash_password(password)
 
 def give_access(username, plan_key):
     users = load_users()
@@ -104,7 +115,7 @@ def give_access(username, plan_key):
     users[username]["status"] = "active"
     
     if plan["days"] is None:
-        users[username]["end_date"] = None  # Вечная
+        users[username]["end_date"] = None
     else:
         end_date = datetime.now() + timedelta(days=plan["days"])
         users[username]["end_date"] = end_date.isoformat()
@@ -253,21 +264,26 @@ def start(m):
     bot.reply_to(m, 
         "👋 Добро пожаловать в PyAI!\n\n"
         "📝 Для регистрации отправь:\n"
-        "/register Имя\n\n"
+        "/register Имя Пароль\n\n"
         "💡 После регистрации напиши @cursed_pharaon для покупки подписки."
     )
 
 @bot.message_handler(commands=['register'])
 def register(m):
-    parts = m.text.split(maxsplit=1)
-    if len(parts) != 2:
-        bot.reply_to(m, "❌ Использование: /register Имя")
+    parts = m.text.split()
+    if len(parts) != 3:
+        bot.reply_to(m, "❌ Использование: /register Имя Пароль")
         return
     
-    username = parts[1].strip()
+    username = parts[1]
+    password = parts[2]
     user_id = m.from_user.id
     
-    if create_user(username, user_id):
+    if len(password) < 4:
+        bot.reply_to(m, "❌ Пароль должен быть не менее 4 символов")
+        return
+    
+    if create_user(username, password, user_id):
         bot.reply_to(m, f"✅ Регистрация успешна, {username}!\n\nДля покупки подписки напиши @cursed_pharaon")
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
@@ -279,7 +295,7 @@ def my_subscription(m):
     name, data = get_user_by_id(user_id)
     
     if not name:
-        bot.reply_to(m, "❌ Ты не зарегистрирован. Используй /register Имя")
+        bot.reply_to(m, "❌ Ты не зарегистрирован. Используй /register Имя Пароль")
         return
     
     info = get_subscription_info(name)
@@ -325,7 +341,6 @@ def give(m):
         plan_name = PLANS[plan_key]["name"]
         bot.reply_to(m, f"✅ {name} получил доступ на {plan_name}")
         
-        # Уведомляем пользователя
         user_data = load_users().get(name, {})
         user_id = user_data.get("user_id")
         if user_id:
@@ -400,17 +415,18 @@ def help_cmd(m):
             "/listusers - список пользователей\n"
             "/stats - статистика\n\n"
             "👤 Пользовательские:\n"
-            "/register имя - регистрация\n"
+            "/register имя пароль - регистрация\n"
             "/my - моя подписка\n"
             "/help - помощь"
         )
     else:
         bot.reply_to(m,
             "👤 Команды:\n"
-            "/register имя - регистрация\n"
+            "/register имя пароль - регистрация\n"
             "/my - моя подписка\n"
             "/help - помощь\n\n"
-            "💬 Просто пиши сообщения, и я отвечу!"
+            "💬 Просто пиши сообщения, и я отвечу!\n"
+            "🌐 Также доступен сайт: https://pyai-vyzq.onrender.com"
         )
 
 # ============================================
@@ -418,7 +434,6 @@ def help_cmd(m):
 # ============================================
 @bot.message_handler(func=lambda m: True)
 def all_messages(m):
-    # Если сообщение начинается с "/" - не отвечаем (это команда)
     if m.text and m.text.startswith('/'):
         return
     
@@ -426,7 +441,7 @@ def all_messages(m):
     name, data = get_user_by_id(user_id)
     
     if not name:
-        bot.reply_to(m, "❌ Ты не зарегистрирован. Используй /register Имя")
+        bot.reply_to(m, "❌ Ты не зарегистрирован. Используй /register Имя Пароль")
         return
     
     status = check_subscription(name)
@@ -439,26 +454,85 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# АВТО-ПИНГ
+# ВЕБ-СЕРВЕР (САЙТ)
 # ============================================
-def keep_alive():
-    url = f"http://localhost:{PORT}/ping"
-    while True:
-        try:
-            requests.get(url, timeout=5)
-            print(f"🔄 Пинг")
-        except:
-            pass
-        time.sleep(300)
-
 @app.route('/')
 def index():
-    users = load_users()
-    return f"PyAI Bot is running! 👥 Users: {len(users)}"
+    return send_file('index.html')
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+    
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Введите имя и пароль'})
+    
+    if check_password(username, password):
+        status = check_subscription(username)
+        info = get_subscription_info(username)
+        return jsonify({
+            'success': True,
+            'username': username,
+            'status': status,
+            'plan': info['plan'] if info else 'Нет',
+            'days_left': info['days_left'] if info else 0
+        })
+    else:
+        return jsonify({'success': False, 'error': 'Неверное имя или пароль'})
+
+@app.route('/register_web', methods=['POST'])
+def register_web():
+    data = request.json
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+    
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Заполните все поля'})
+    
+    if len(password) < 4:
+        return jsonify({'success': False, 'error': 'Пароль должен быть не менее 4 символов'})
+    
+    if create_user(username, password):
+        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (через сайт)")
+        return jsonify({'success': True, 'message': 'Регистрация успешна! Ожидайте активации.'})
+    else:
+        return jsonify({'success': False, 'error': 'Имя уже занято'})
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    data = request.json
+    username = data.get('username', '').strip()
+    message = data.get('message', '').strip()
+    
+    if not username or not message:
+        return jsonify({'success': False, 'error': 'Введите имя и сообщение'})
+    
+    status = check_subscription(username)
+    if status != "active":
+        return jsonify({'success': False, 'error': 'Подписка неактивна. Напишите @cursed_pharaon для продления'})
+    
+    response = ask_ai(message)
+    return jsonify({'success': True, 'response': response})
 
 @app.route('/ping')
 def ping():
     return "OK", 200
+
+def keep_alive():
+    urls = [
+        f"http://localhost:{PORT}/ping",
+        f"https://pyai-vyzq.onrender.com/ping"
+    ]
+    while True:
+        for url in urls:
+            try:
+                r = requests.get(url, timeout=5)
+                print(f"🔄 Пинг {url} -> {r.status_code}")
+            except Exception as e:
+                print(f"❌ Ошибка пинга: {e}")
+        time.sleep(120)
 
 def run_bot():
     print("🤖 Бот запущен!")
@@ -467,9 +541,6 @@ def run_bot():
 def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
-# ============================================
-# ЗАПУСК
-# ============================================
 if __name__ == "__main__":
     print("🚀 Запуск PyAI Bot...")
     
