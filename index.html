@@ -22,7 +22,6 @@
             border-radius: 40px;
             padding: 40px 30px;
             border: 1px solid rgba(0, 180, 255, 0.2);
-            box-shadow: 0 30px 80px rgba(0, 80, 255, 0.15);
         }
         .logo { text-align: center; margin-bottom: 30px; }
         .logo-icon {
@@ -32,7 +31,6 @@
             display: flex; align-items: center; justify-content: center;
             font-size: 30px; font-weight: 800; color: white;
             margin: 0 auto 10px;
-            box-shadow: 0 0 40px rgba(0,100,255,0.3);
         }
         .logo h1 { font-size: 32px; background: linear-gradient(90deg, #00ccff, #7766ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
         .logo p { color: #667799; font-size: 14px; }
@@ -43,18 +41,16 @@
             border: 1px solid rgba(255,255,255,0.08);
             background: rgba(0,0,0,0.35);
             color: #e0e8ff; font-size: 15px; outline: none;
-            transition: 0.3s;
         }
-        .form-group input:focus { border-color: rgba(0,180,255,0.4); box-shadow: 0 0 20px rgba(0,100,255,0.08); }
+        .form-group input:focus { border-color: rgba(0,180,255,0.4); }
         .form-group input::placeholder { color: #556688; }
         button {
             width: 100%; padding: 16px; border-radius: 30px; border: none;
             background: linear-gradient(135deg, #0088ff, #5500ff);
             color: white; font-weight: 600; font-size: 16px; cursor: pointer;
-            transition: 0.3s; box-shadow: 0 0 30px rgba(0,100,255,0.15);
         }
-        button:hover { transform: scale(1.02); box-shadow: 0 0 50px rgba(0,100,255,0.3); }
-        button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        button:hover { transform: scale(1.02); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
         .message { margin-top: 16px; padding: 14px; border-radius: 16px; text-align: center; font-size: 14px; display: none; }
         .message.success { display: block; background: rgba(0,255,150,0.08); border: 1px solid rgba(0,255,150,0.15); color: #66ffaa; }
         .message.error { display: block; background: rgba(255,50,50,0.08); border: 1px solid rgba(255,50,50,0.15); color: #ff6666; }
@@ -66,7 +62,6 @@
             color: #ccaa66; font-size: 13px;
         }
         .info-box a { color: #88ddff; text-decoration: none; font-weight: 600; }
-        .info-box a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -77,92 +72,19 @@
             <p>Нейросеть нового поколения</p>
         </div>
 
-        <div id="registerForm">
-            <div class="form-group">
-                <label>👤 Ваше имя</label>
-                <input type="text" id="username" placeholder="Введите имя" />
-            </div>
-            <button id="registerBtn">Зарегистрироваться</button>
-            <div id="message" class="message"></div>
-            <div class="info-box">
-                ⚡ После регистрации ваш аккаунт будет активирован администратором.<br />
-                Для получения доступа напишите в <a href="https://t.me/PyAI_bot" target="_blank">@PyAI_bot</a>
-            </div>
+        <div class="form-group">
+            <label>👤 Ваше имя</label>
+            <input type="text" id="username" placeholder="Введите имя" />
+        </div>
+        <button id="registerBtn">Зарегистрироваться</button>
+        <div id="message" class="message"></div>
+        <div class="info-box">
+            ⚡ После регистрации напишите в <a href="https://t.me/PyAI_bot" target="_blank">@PyAI_bot</a> для активации
         </div>
     </div>
 
     <script>
-        const TURSO_URL = 'https://pyai-cursedd.aws-eu-west-1.turso.io/v1/query';
-        const TURSO_TOKEN = 'eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4Mzg2OTAsImlkIjoiMDFhMDQzN2QtMmQwMS03ZjZmLTk1MDAtNTUzZTI5YzFjNmI1Iiwia2lkIjoicWpYbEhLbElGQmJNX29uRDlaWEkyWFVfazVBT3h3X3JIMF9TcUZ6MmU0ZyIsInJpZCI6IjZhMzk2M2ZkLWYzM2QtNGE2MS1hMTQwLTQyYWU1ZTExZWQ5NCJ9.2pxIFQ_FkjhaNgqU6Adj6pEOaSxRx_rVI6Jc8SdAbvLMYbXWxsyhH8q78TZKcCQ51m7RiitFUzfOGUr-2UalAg';
-
-        async function tursoQuery(sql, params = []) {
-            const payload = {
-                requests: [{
-                    type: 'execute',
-                    stmt: { sql: sql, args: params }
-                }]
-            };
-
-            try {
-                const response = await fetch(TURSO_URL, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${TURSO_TOKEN}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(payload)
-                });
-                
-                const text = await response.text();
-                console.log('Response:', text);
-                
-                try {
-                    return JSON.parse(text);
-                } catch (e) {
-                    console.error('JSON parse error:', e);
-                    return null;
-                }
-            } catch (error) {
-                console.error('Turso error:', error);
-                return null;
-            }
-        }
-
-        async function initDB() {
-            const sql = `
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    subscription_status TEXT DEFAULT 'inactive',
-                    subscription_end TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-            `;
-            await tursoQuery(sql);
-        }
-
-        async function registerUser(username) {
-            const result = await tursoQuery(
-                'INSERT INTO users (username, subscription_status) VALUES (?, "inactive")',
-                [username]
-            );
-            console.log('Insert result:', result);
-            
-            if (result && result.results) {
-                return { success: true };
-            }
-            
-            if (result && result.error) {
-                return { success: false, error: result.error };
-            }
-            
-            return { success: false, error: 'Unknown error' };
-        }
-
-        document.addEventListener('DOMContentLoaded', async function() {
-            await initDB();
-        });
-
+        // Регистрация через API бота
         document.getElementById('registerBtn').addEventListener('click', async function() {
             const username = document.getElementById('username').value.trim();
             const messageEl = document.getElementById('message');
@@ -173,29 +95,26 @@
                 return;
             }
 
-            if (username.length < 2) {
-                messageEl.className = 'message error';
-                messageEl.textContent = '❌ Имя должно быть не менее 2 символов';
-                return;
-            }
-
             this.disabled = true;
             this.textContent = '⏳ Регистрация...';
 
             try {
-                const result = await registerUser(username);
-                
-                if (result.success) {
+                // Отправляем запрос на регистрацию в бот
+                const response = await fetch('/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'username=' + encodeURIComponent(username)
+                });
+
+                const text = await response.text();
+
+                if (response.ok) {
                     messageEl.className = 'message success';
                     messageEl.textContent = '✅ Регистрация успешна! Ожидайте активации.';
                     document.getElementById('username').value = '';
                 } else {
-                    let errorMsg = result.error || 'Неизвестная ошибка';
-                    if (errorMsg.includes('UNIQUE constraint')) {
-                        errorMsg = 'Пользователь с таким именем уже существует';
-                    }
                     messageEl.className = 'message error';
-                    messageEl.textContent = '❌ ' + errorMsg;
+                    messageEl.textContent = '❌ ' + text;
                 }
             } catch (error) {
                 messageEl.className = 'message error';
