@@ -1,15 +1,11 @@
 import telebot
-import requests
 import json
 import os
-import threading
-import time
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
+import requests
 
 # ============================================
-# НАСТРОЙКИ
+# ТОКЕНЫ
 # ============================================
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
@@ -18,19 +14,13 @@ OPENROUTER_API_KEY = "sk-or-v1-025266fd20513f3d1c5edc4b4c59fa98b6c18d9b4b270760a
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "openrouter/free"
 
-# Используем /tmp (всегда есть права на запись)
-DATA_DIR = '/tmp/pyai_data'
-os.makedirs(DATA_DIR, exist_ok=True)
-USERS_FILE = os.path.join(DATA_DIR, 'users.json')
-
-PORT = 10000
+# Файл с данными
+USERS_FILE = "users.json"
 
 bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask(__name__)
-CORS(app)
 
 # ============================================
-# РАБОТА С ПОЛЬЗОВАТЕЛЯМИ
+# РАБОТА С JSON
 # ============================================
 def load_users():
     if not os.path.exists(USERS_FILE):
@@ -45,47 +35,24 @@ def save_users(users):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=2, ensure_ascii=False)
 
-def create_user(username, user_id=None):
+def create_user(username, user_id):
     users = load_users()
     if username in users:
         return False
     users[username] = {
-        "user_id": user_id,
-        "subscription_status": "inactive",
-        "subscription_end": None,
-        "created_at": datetime.now().isoformat()
+        "user_id": str(user_id),
+        "status": "inactive",
+        "end_date": None
     }
     save_users(users)
     return True
 
-def get_user_by_username(username):
-    users = load_users()
-    return users.get(username)
-
 def get_user_by_id(user_id):
     users = load_users()
-    for username, data in users.items():
-        if str(data.get("user_id")) == str(user_id):
-            return {"username": username, "data": data}
-    return None
-
-def get_user_status(username):
-    users = load_users()
-    if username not in users:
-        return None
-    
-    user = users[username]
-    status = user.get("subscription_status", "inactive")
-    end_date = user.get("subscription_end")
-    
-    if status == "active" and end_date:
-        if datetime.now().isoformat() > end_date:
-            user["subscription_status"] = "inactive"
-            user["subscription_end"] = None
-            save_users(users)
-            return "inactive"
-    
-    return status
+    for name, data in users.items():
+        if data.get("user_id") == str(user_id):
+            return name, data
+    return None, None
 
 def give_access(username, plan):
     users = load_users()
@@ -94,46 +61,49 @@ def give_access(username, plan):
     
     days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
     if days is None:
-        users[username]["subscription_status"] = "active"
-        users[username]["subscription_end"] = None
+        users[username]["status"] = "active"
+        users[username]["end_date"] = None
     else:
         end_date = (datetime.now() + timedelta(days=days)).isoformat()
-        users[username]["subscription_status"] = "active"
-        users[username]["subscription_end"] = end_date
+        users[username]["status"] = "active"
+        users[username]["end_date"] = end_date
     
     save_users(users)
     return True
 
-def remove_access(username):
+def get_status(username):
     users = load_users()
     if username not in users:
-        return False
-    users[username]["subscription_status"] = "inactive"
-    users[username]["subscription_end"] = None
-    save_users(users)
-    return True
+        return None
+    
+    status = users[username].get("status", "inactive")
+    end_date = users[username].get("end_date")
+    
+    if status == "active" and end_date:
+        if datetime.now().isoformat() > end_date:
+            users[username]["status"] = "inactive"
+            users[username]["end_date"] = None
+            save_users(users)
+            return "inactive"
+    
+    return status
 
 def list_users():
     users = load_users()
-    return [(username, data["subscription_status"], data.get("subscription_end")) 
-            for username, data in users.items()]
-
-def check_user_exists(username):
-    users = load_users()
-    return username in users
+    return [(name, data["status"], data.get("end_date")) for name, data in users.items()]
 
 # ============================================
 # OPENROUTER
 # ============================================
-def ask_openrouter(prompt):
+def ask_ai(question):
     try:
         r = requests.post(
             OPENROUTER_URL,
             json={
                 "model": OPENROUTER_MODEL,
                 "messages": [
-                    {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть. Ты бесплатна."},
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть."},
+                    {"role": "user", "content": question}
                 ]
             },
             headers={
@@ -148,91 +118,55 @@ def ask_openrouter(prompt):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# КОМАНДЫ БОТА
+# КОМАНДЫ
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
-    user_id = str(m.from_user.id)
-    user = get_user_by_id(user_id)
+    user_id = m.from_user.id
+    name, data = get_user_by_id(user_id)
     
-    if user:
-        username = user["username"]
-        status = get_user_status(username)
+    if name:
+        status = get_status(name)
         if status == "active":
-            bot.reply_to(m, f"✅ Привет, {username}! Твоя подписка активна. Задавай любой вопрос!")
+            bot.reply_to(m, f"✅ Привет, {name}! Подписка активна. Задавай вопросы!")
         else:
-            bot.reply_to(m, f"❌ Привет, {username}! Твоя подписка неактивна. Для продления напиши @cursed_pharaon")
+            bot.reply_to(m, f"❌ Привет, {name}! Подписка неактивна. Напиши @cursed_pharaon")
         return
     
-    bot.reply_to(m, 
-        "👋 Добро пожаловать в PyAI!\n\n"
-        "Чтобы начать пользоваться, отправь /register Имя\n\n"
-        "💡 Подписка активируется администратором.\n"
-        "📩 Для продления подписки напишите @cursed_pharaon"
-    )
+    bot.reply_to(m, "👋 Привет! Отправь /register Имя")
 
 @bot.message_handler(commands=['register'])
 def register(m):
     parts = m.text.split(maxsplit=1)
     if len(parts) != 2:
-        bot.reply_to(m, "❌ Использование: /register Имя")
+        bot.reply_to(m, "❌ /register Имя")
         return
     
     username = parts[1].strip()
-    user_id = str(m.from_user.id)
-    
-    if check_user_exists(username):
-        bot.reply_to(m, f"❌ Имя '{username}' уже занято")
-        return
+    user_id = m.from_user.id
     
     if create_user(username, user_id):
-        bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации от администратора.\n\n📩 Для продления подписки напишите @cursed_pharaon")
-        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (ID: {user_id})")
+        bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации.")
+        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
-        bot.reply_to(m, "❌ Ошибка регистрации")
+        bot.reply_to(m, "❌ Имя занято")
 
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
     if m.from_user.id != ADMIN_ID:
-        bot.reply_to(m, "⛔ Доступ запрещён.")
         return
     
     parts = m.text.split()
-    if len(parts) != 3 or parts[2] not in ["1","2","3","4"]:
-        bot.reply_to(m, "❌ /giveaccess имя 1-4\n1-неделя, 2-месяц, 3-год, 4-вечный")
+    if len(parts) != 3:
+        bot.reply_to(m, "❌ /giveaccess имя 1-4")
         return
     
-    username, plan = parts[1], parts[2]
-    if not check_user_exists(username):
-        bot.reply_to(m, f"❌ Пользователь '{username}' не найден")
-        return
-    
-    give_access(username, plan)
-    plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
-    bot.reply_to(m, f"✅ Доступ выдан на {plan_names[plan]} для {username}")
-    
-    users = load_users()
-    user_id = users.get(username, {}).get("user_id")
-    if user_id:
-        try:
-            bot.send_message(int(user_id), f"🎉 {username}, твоя подписка активирована на {plan_names[plan]}! Задавай любые вопросы.")
-        except:
-            pass
-
-@bot.message_handler(commands=['removeaccess'])
-def remove(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    parts = m.text.split()
-    if len(parts) != 2:
-        bot.reply_to(m, "❌ /removeaccess имя")
-        return
-    
-    username = parts[1]
-    if remove_access(username):
-        bot.reply_to(m, f"✅ Доступ отключён для {username}")
+    name, plan = parts[1], parts[2]
+    if give_access(name, plan):
+        plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
+        bot.reply_to(m, f"✅ {name} получил доступ на {plan_names[plan]}")
     else:
-        bot.reply_to(m, f"❌ Пользователь {username} не найден")
+        bot.reply_to(m, f"❌ {name} не найден")
 
 @bot.message_handler(commands=['listusers'])
 def listu(m):
@@ -244,140 +178,35 @@ def listu(m):
         bot.reply_to(m, "📭 Нет пользователей")
         return
     
-    text = "📋 Список пользователей:\n\n"
-    for username, status, end in users:
-        emoji = "✅" if status == 'active' else "❌"
-        end_str = f"до {end[:10]}" if end else "бессрочно" if status == 'active' else "-"
-        text += f"{emoji} {username} | {status} {end_str}\n"
+    text = "📋 Список:\n"
+    for name, status, end in users:
+        emoji = "✅" if status == "active" else "❌"
+        end_str = f"до {end[:10]}" if end else "навсегда" if status == "active" else ""
+        text += f"{emoji} {name} | {status} {end_str}\n"
     
-    bot.reply_to(m, text[:4000])
-
-@bot.message_handler(commands=['checkuser'])
-def check(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    parts = m.text.split()
-    if len(parts) != 2:
-        bot.reply_to(m, "❌ /checkuser имя")
-        return
-    
-    username = parts[1]
-    status = get_user_status(username)
-    if status is None:
-        bot.reply_to(m, f"❌ Пользователь '{username}' не найден")
-    else:
-        bot.reply_to(m, f"📊 Статус '{username}': {status}")
-
-@bot.message_handler(commands=['stats'])
-def stats(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    users = load_users()
-    total = len(users)
-    active = sum(1 for u in users.values() if u.get("subscription_status") == "active")
-    bot.reply_to(m, f"📊 Всего: {total}\n✅ Активных: {active}\n❌ Неактивных: {total - active}")
-
-@bot.message_handler(commands=['ask'])
-def ask(m):
-    parts = m.text.split(maxsplit=1)
-    if len(parts) != 2:
-        bot.reply_to(m, "❌ /ask вопрос")
-        return
-    
-    bot.reply_to(m, "🤔 Думаю...")
-    response = ask_openrouter(parts[1])
-    bot.reply_to(m, f"🧠 PyAI:\n{response[:4000]}")
+    bot.reply_to(m, text)
 
 @bot.message_handler(func=lambda m: True)
 def all_messages(m):
-    user_id = str(m.from_user.id)
-    user = get_user_by_id(user_id)
+    user_id = m.from_user.id
+    name, data = get_user_by_id(user_id)
     
-    if not user:
-        bot.reply_to(m, "❌ Ты не зарегистрирован. Используй /register Имя")
+    if not name:
+        bot.reply_to(m, "❌ Зарегистрируйся: /register Имя")
         return
     
-    username = user["username"]
-    status = get_user_status(username)
+    status = get_status(name)
     if status != "active":
-        bot.reply_to(m, f"❌ Твоя подписка неактивна. Для продления напиши @cursed_pharaon")
+        bot.reply_to(m, "❌ Подписка неактивна. Напиши @cursed_pharaon")
         return
     
     bot.reply_to(m, "🤔 Думаю...")
-    response = ask_openrouter(m.text)
-    bot.reply_to(m, f"🧠 PyAI:\n{response[:4000]}")
-
-# ============================================
-# ВЕБ-СЕРВЕР
-# ============================================
-@app.route('/')
-def index():
-    return send_file('index.html')
-
-@app.route('/ping')
-def ping():
-    return "OK", 200
-
-@app.route('/chat', methods=['POST'])
-def chat():
-    data = request.json
-    username = data.get('username', '').strip()
-    message = data.get('message', '').strip()
-    
-    if not username or not message:
-        return jsonify({'error': 'Введите имя и вопрос'}), 400
-    
-    status = get_user_status(username)
-    if status is None:
-        return jsonify({'error': 'Пользователь не найден. Зарегистрируйтесь.'}), 404
-    
-    if status != 'active':
-        return jsonify({'error': 'Подписка неактивна. Напишите @cursed_pharaon для продления.'}), 403
-    
-    response = ask_openrouter(message)
-    return jsonify({'response': response})
-
-@app.route('/register', methods=['POST'])
-def register_web():
-    try:
-        username = request.form.get('username', '').strip()
-        print(f"📝 Попытка регистрации: {username}")
-        
-        if not username:
-            return "Введите имя", 400
-        
-        if len(username) < 2:
-            return "Имя должно быть не менее 2 символов", 400
-        
-        if check_user_exists(username):
-            return "Пользователь с таким именем уже существует", 400
-        
-        if create_user(username):
-            bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (зарегистрирован через сайт)")
-            print(f"✅ Регистрация успешна: {username}")
-            return "Регистрация успешна! Ожидайте активации администратора.", 200
-        else:
-            print(f"❌ Ошибка создания пользователя: {username}")
-            return "Ошибка регистрации", 500
-    except Exception as e:
-        print(f"❌ Исключение: {e}")
-        return f"Ошибка: {str(e)}", 500
+    response = ask_ai(m.text)
+    bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
 # ЗАПУСК
 # ============================================
-def run_bot():
+if __name__ == "__main__":
     print("🤖 Бот запущен!")
     bot.polling(non_stop=True)
-
-def run_web():
-    print(f"🌐 Веб-сервер запущен на порту {PORT}")
-    app.run(host='0.0.0.0', port=PORT)
-
-if __name__ == "__main__":
-    print(f"📂 Данные сохраняются в: {USERS_FILE}")
-    
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    
-    run_web()
