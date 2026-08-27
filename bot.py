@@ -4,7 +4,7 @@ import json
 import os
 import threading
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 
 # ============================================
 # НАСТРОЙКИ
@@ -37,15 +37,12 @@ def save_users(users):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=2, ensure_ascii=False)
 
-def get_user(username):
-    users = load_users()
-    return users.get(username)
-
-def create_user(username):
+def create_user(username, user_id=None):
     users = load_users()
     if username in users:
         return False
     users[username] = {
+        "user_id": user_id,
         "subscription_status": "inactive",
         "subscription_end": None,
         "created_at": datetime.now().isoformat()
@@ -136,26 +133,63 @@ def ask_openrouter(prompt):
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
-    if m.from_user.id != ADMIN_ID:
-        bot.reply_to(m, "⛔ Доступ запрещён.")
+    user_id = m.from_user.id
+    
+    # Если пользователь уже зарегистрирован
+    users = load_users()
+    username = None
+    for name, data in users.items():
+        if data.get("user_id") == user_id:
+            username = name
+            break
+    
+    if username:
+        status = get_user_status(username)
+        if status == "active":
+            bot.reply_to(m, f"✅ Привет, {username}! Твоя подписка активна. Задавай любой вопрос!")
+        else:
+            bot.reply_to(m, f"❌ Привет, {username}! Твоя подписка неактивна. Для продления напиши @cursed_pharaon")
         return
+    
+    # Если не зарегистрирован
     bot.reply_to(m, 
-        "👋 Админ!\n\n"
-        "/giveaccess имя 1-4 - дать доступ\n"
-        "/removeaccess имя - отключить\n"
-        "/listusers - список\n"
-        "/checkuser имя - статус\n"
-        "/stats - статистика\n"
-        "/ask вопрос - спросить PyAI"
+        "👋 Добро пожаловать в PyAI!\n\n"
+        "Чтобы начать пользоваться, зарегистрируйся на сайте или отправь /register Имя\n\n"
+        "💡 Подписка активируется администратором.\n"
+        "📩 Для продления подписки напишите @cursed_pharaon"
     )
+
+@bot.message_handler(commands=['register'])
+def register(m):
+    parts = m.text.split(maxsplit=1)
+    if len(parts) != 2:
+        bot.reply_to(m, "❌ Использование: /register Имя")
+        return
+    
+    username = parts[1].strip()
+    user_id = m.from_user.id
+    
+    if check_user_exists(username):
+        bot.reply_to(m, f"❌ Имя '{username}' уже занято")
+        return
+    
+    if create_user(username, user_id):
+        bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации от администратора.\n\n📩 Для продления подписки напишите @cursed_pharaon")
+        
+        # Уведомляем админа
+        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (ID: {user_id})")
+    else:
+        bot.reply_to(m, "❌ Ошибка регистрации")
 
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
     if m.from_user.id != ADMIN_ID:
+        bot.reply_to(m, "⛔ Доступ запрещён.")
         return
+    
     parts = m.text.split()
     if len(parts) != 3 or parts[2] not in ["1","2","3","4"]:
-        bot.reply_to(m, "❌ /giveaccess имя 1-4")
+        bot.reply_to(m, "❌ /giveaccess имя 1-4\n1-неделя, 2-месяц, 3-год, 4-вечный")
         return
     
     username, plan = parts[1], parts[2]
@@ -166,6 +200,15 @@ def give(m):
     give_access(username, plan)
     plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
     bot.reply_to(m, f"✅ Доступ выдан на {plan_names[plan]} для {username}")
+    
+    # Уведомляем пользователя
+    users = load_users()
+    user_id = users.get(username, {}).get("user_id")
+    if user_id:
+        try:
+            bot.send_message(user_id, f"🎉 {username}, твоя подписка активирована на {plan_names[plan]}! Задавай любые вопросы.")
+        except:
+            pass
 
 @bot.message_handler(commands=['removeaccess'])
 def remove(m):
@@ -204,7 +247,6 @@ def listu(m):
 def check(m):
     if m.from_user.id != ADMIN_ID:
         return
-    
     parts = m.text.split()
     if len(parts) != 2:
         bot.reply_to(m, "❌ /checkuser имя")
@@ -221,23 +263,13 @@ def check(m):
 def stats(m):
     if m.from_user.id != ADMIN_ID:
         return
-    
     users = load_users()
     total = len(users)
     active = sum(1 for u in users.values() if u.get("subscription_status") == "active")
-    
-    bot.reply_to(m,
-        f"📊 Статистика:\n"
-        f"👥 Всего: {total}\n"
-        f"✅ Активных: {active}\n"
-        f"❌ Неактивных: {total - active}"
-    )
+    bot.reply_to(m, f"📊 Всего: {total}\n✅ Активных: {active}\n❌ Неактивных: {total - active}")
 
 @bot.message_handler(commands=['ask'])
 def ask(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    
     parts = m.text.split(maxsplit=1)
     if len(parts) != 2:
         bot.reply_to(m, "❌ /ask вопрос")
@@ -249,8 +281,23 @@ def ask(m):
 
 @bot.message_handler(func=lambda m: True)
 def all_messages(m):
-    if m.from_user.id != ADMIN_ID:
-        bot.reply_to(m, "⛔ Доступ запрещён.")
+    user_id = m.from_user.id
+    
+    # Проверяем подписку
+    users = load_users()
+    username = None
+    for name, data in users.items():
+        if data.get("user_id") == user_id:
+            username = name
+            break
+    
+    if not username:
+        bot.reply_to(m, "❌ Ты не зарегистрирован. Используй /register Имя")
+        return
+    
+    status = get_user_status(username)
+    if status != "active":
+        bot.reply_to(m, f"❌ Твоя подписка неактивна. Для продления напиши @cursed_pharaon")
         return
     
     bot.reply_to(m, "🤔 Думаю...")
@@ -258,14 +305,14 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 PyAI:\n{response[:4000]}")
 
 # ============================================
-# ВЕБ-СЕРВЕР (для Render)
+# ВЕБ-СЕРВЕР
 # ============================================
 @app.route('/')
 def index():
-    return "PyAI Bot is running!"
+    return send_file('index.html')
 
 @app.route('/register', methods=['POST'])
-def register():
+def register_web():
     username = request.form.get('username', '').strip()
     if not username:
         return "Введите имя", 400
@@ -277,7 +324,9 @@ def register():
         return "Пользователь с таким именем уже существует", 400
     
     if create_user(username):
-        return "Регистрация успешна! Ожидайте активации.", 200
+        # Уведомляем админа
+        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (зарегистрирован через сайт)")
+        return "Регистрация успешна! Ожидайте активации администратора.", 200
     else:
         return "Ошибка регистрации", 500
 
@@ -293,9 +342,6 @@ def run_web():
     app.run(host='0.0.0.0', port=10000)
 
 if __name__ == "__main__":
-    # Запускаем бота в отдельном потоке
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
-    
-    # Запускаем веб-сервер
     run_web()
