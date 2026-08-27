@@ -14,7 +14,7 @@ import urllib.error
 # ============================================
 # НАСТРОЙКИ
 # ============================================
-TELEGRAM_TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"  # Получить у @BotFather
+TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"  # Получить у @BotFather
 ADMIN_ID = 8549857532  # Твой Telegram ID
 
 # OpenRouter API (твой ключ уже вставлен)
