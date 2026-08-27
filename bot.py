@@ -1,9 +1,7 @@
 import telebot
 import requests
-from flask import Flask
-import threading
+from flask import Flask, request
 import os
-import time
 
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
@@ -15,20 +13,14 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 # ============================================
-# ФУНКЦИИ БАЗЫ
+# ФУНКЦИИ БАЗЫ (SUPABASE)
 # ============================================
 def user_exists(username):
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            return len(data) > 0
-        return False
+        return r.status_code == 200 and len(r.json()) > 0
     except:
         return False
 
@@ -39,47 +31,32 @@ def create_user(username, user_id):
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json"
     }
-    data = {
-        "username": username,
-        "user_id": str(user_id),
-        "status": "inactive"
-    }
+    data = {"username": username, "user_id": str(user_id), "status": "inactive"}
     try:
         r = requests.post(url, json=data, headers=headers, timeout=10)
-        print(f"Create user: {r.status_code}, {r.text}")
         return r.status_code in [200, 201]
-    except Exception as e:
-        print(f"Create error: {e}")
+    except:
         return False
 
 def get_user_by_id(user_id):
     url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=username,status,end_date"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                return data[0]["username"], data[0]
+        if r.status_code == 200 and r.json():
+            data = r.json()[0]
+            return data["username"], data
         return None, None
     except:
         return None, None
 
 def get_status(username):
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=status,end_date"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                return data[0].get("status", "inactive")
+        if r.status_code == 200 and r.json():
+            return r.json()[0].get("status", "inactive")
         return None
     except:
         return None
@@ -87,9 +64,7 @@ def get_status(username):
 def give_access(username, plan):
     from datetime import datetime, timedelta
     days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
-    end_date = None
-    if days:
-        end_date = (datetime.now() + timedelta(days=days)).isoformat()
+    end_date = (datetime.now() + timedelta(days=days)).isoformat() if days else None
     
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}"
     headers = {
@@ -106,15 +81,11 @@ def give_access(username, plan):
 
 def list_users():
     url = f"{SUPABASE_URL}/rest/v1/users?select=username,status,end_date"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
-            data = r.json()
-            return [(item["username"], item["status"], item.get("end_date")) for item in data]
+            return [(item["username"], item["status"], item.get("end_date")) for item in r.json()]
         return []
     except:
         return []
@@ -145,7 +116,7 @@ def ask_ai(question):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# КОМАНДЫ БОТА
+# ОБРАБОТЧИКИ КОМАНД
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -235,32 +206,41 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# ВЕБ-СЕРВЕР
+# ВЕБ-ХУК (Flask)
 # ============================================
-@app.route('/')
+@app.route('/', methods=['GET'])
 def index():
-    users = list_users()
-    return f"PyAI Bot is running! 👥 Users: {len(users)}"
+    return "PyAI Bot is running! ✅"
 
-@app.route('/ping')
+@app.route('/ping', methods=['GET'])
 def ping():
     return "OK", 200
 
-def run_bot():
-    while True:
-        try:
-            print("🤖 Бот запущен!")
-            bot.polling(non_stop=True, interval=0)
-        except Exception as e:
-            print(f"❌ Ошибка: {e}")
-            time.sleep(5)
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    try:
+        json_str = request.get_data().decode('UTF-8')
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "OK", 200
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return "Error", 500
 
-def run_web():
-    port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 Веб-сервер на порту {port}")
-    app.run(host='0.0.0.0', port=port)
-
+# ============================================
+# ЗАПУСК
+# ============================================
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    run_web()
+    # Устанавливаем веб-хук
+    WEBHOOK_URL = f"https://pyai-7edz.onrender.com/webhook"
+    
+    try:
+        bot.remove_webhook()
+        bot.set_webhook(url=WEBHOOK_URL)
+        print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+    except Exception as e:
+        print(f"❌ Ошибка установки webhook: {e}")
+    
+    port = int(os.environ.get('PORT', 10000))
+    print(f"🚀 Запуск сервера на порту {port}")
+    app.run(host='0.0.0.0', port=port)
