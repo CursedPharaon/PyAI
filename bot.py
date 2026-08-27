@@ -3,6 +3,10 @@ import json
 import os
 from datetime import datetime, timedelta
 import requests
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+import threading
+import time
 
 # ============================================
 # ТОКЕНЫ
@@ -18,6 +22,8 @@ OPENROUTER_MODEL = "openrouter/free"
 USERS_FILE = "users.json"
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
+CORS(app)
 
 # ============================================
 # РАБОТА С JSON
@@ -118,7 +124,7 @@ def ask_ai(question):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# КОМАНДЫ
+# КОМАНДЫ БОТА
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -205,8 +211,52 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
+# ВЕБ-СЕРВЕР
+# ============================================
+@app.route('/')
+def index():
+    return "PyAI Bot is running!"
+
+@app.route('/ping')
+def ping():
+    return "OK", 200
+
+@app.route('/register-web', methods=['POST'])
+def register_web():
+    try:
+        username = request.form.get('username', '').strip()
+        user_id = request.form.get('user_id', '').strip()
+        
+        if not username:
+            return "Введите имя", 400
+        
+        if len(username) < 2:
+            return "Имя должно быть не менее 2 символов", 400
+        
+        if create_user(username, user_id):
+            bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (через сайт)")
+            return "Регистрация успешна! Ожидайте активации.", 200
+        else:
+            return "Пользователь с таким именем уже существует", 400
+    except Exception as e:
+        return f"Ошибка: {str(e)}", 500
+
+# ============================================
 # ЗАПУСК
 # ============================================
-if __name__ == "__main__":
+def run_bot():
     print("🤖 Бот запущен!")
     bot.polling(non_stop=True)
+
+def run_web():
+    port = int(os.environ.get('PORT', 10000))
+    print(f"🌐 Веб-сервер запущен на порту {port}")
+    app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Запускаем веб-сервер в главном потоке
+    run_web()
