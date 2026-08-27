@@ -2,6 +2,7 @@ import telebot
 import requests
 from flask import Flask, request
 import os
+import json
 
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
@@ -13,15 +14,26 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 # ============================================
-# ФУНКЦИИ БАЗЫ (SUPABASE)
+# ФУНКЦИИ БАЗЫ С ЛОГАМИ
 # ============================================
+def log(msg):
+    print(f"[LOG] {msg}")
+
 def user_exists(username):
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        return r.status_code == 200 and len(r.json()) > 0
-    except:
+        log(f"user_exists: статус {r.status_code}, ответ: {r.text}")
+        if r.status_code == 200:
+            data = r.json()
+            return len(data) > 0
+        return False
+    except Exception as e:
+        log(f"user_exists ошибка: {e}")
         return False
 
 def create_user(username, user_id):
@@ -29,36 +41,57 @@ def create_user(username, user_id):
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
     }
-    data = {"username": username, "user_id": str(user_id), "status": "inactive"}
+    data = {
+        "username": username,
+        "user_id": str(user_id),
+        "status": "inactive"
+    }
     try:
+        log(f"create_user: отправка {json.dumps(data)}")
         r = requests.post(url, json=data, headers=headers, timeout=10)
+        log(f"create_user: статус {r.status_code}, ответ: {r.text}")
         return r.status_code in [200, 201]
-    except:
+    except Exception as e:
+        log(f"create_user ошибка: {e}")
         return False
 
 def get_user_by_id(user_id):
     url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=username,status,end_date"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200 and r.json():
-            data = r.json()[0]
-            return data["username"], data
+        log(f"get_user_by_id: статус {r.status_code}")
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                return data[0]["username"], data[0]
         return None, None
-    except:
+    except Exception as e:
+        log(f"get_user_by_id ошибка: {e}")
         return None, None
 
 def get_status(username):
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=status,end_date"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200 and r.json():
-            return r.json()[0].get("status", "inactive")
+        log(f"get_status: статус {r.status_code}")
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                return data[0].get("status", "inactive")
         return None
-    except:
+    except Exception as e:
+        log(f"get_status ошибка: {e}")
         return None
 
 def give_access(username, plan):
@@ -75,13 +108,18 @@ def give_access(username, plan):
     data = {"status": "active", "end_date": end_date}
     try:
         r = requests.patch(url, json=data, headers=headers, timeout=10)
+        log(f"give_access: статус {r.status_code}")
         return r.status_code == 200
-    except:
+    except Exception as e:
+        log(f"give_access ошибка: {e}")
         return False
 
 def list_users():
     url = f"{SUPABASE_URL}/rest/v1/users?select=username,status,end_date"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
@@ -116,7 +154,7 @@ def ask_ai(question):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# ОБРАБОТЧИКИ КОМАНД
+# КОМАНДЫ БОТА
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -143,14 +181,21 @@ def register(m):
     username = parts[1].strip()
     user_id = m.from_user.id
     
+    log(f"===== РЕГИСТРАЦИЯ: {username} (user_id: {user_id}) =====")
+    
+    # Проверяем, существует ли пользователь
     if user_exists(username):
+        log(f"Имя {username} уже занято")
         bot.reply_to(m, f"❌ Имя '{username}' уже занято")
         return
     
+    # Создаём пользователя
     if create_user(username, user_id):
+        log(f"✅ Регистрация успешна: {username}")
         bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации.")
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
+        log(f"❌ Ошибка регистрации: {username}")
         bot.reply_to(m, "❌ Ошибка регистрации. Попробуй позже.")
 
 @bot.message_handler(commands=['giveaccess'])
@@ -206,7 +251,7 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# ВЕБ-ХУК (Flask)
+# ВЕБ-ХУК
 # ============================================
 @app.route('/', methods=['GET'])
 def index():
