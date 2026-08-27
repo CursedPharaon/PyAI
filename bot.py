@@ -29,6 +29,8 @@ except:
     pass
 time.sleep(1)
 
+pending_delete = {}
+
 # ============================================
 # ПЛАНЫ ПОДПИСОК
 # ============================================
@@ -202,6 +204,13 @@ def list_users():
         })
     return result
 
+def delete_user(username):
+    users = load_users()
+    if username not in users:
+        return False
+    del users[username]
+    return save_users(users)
+
 # ============================================
 # OPENROUTER
 # ============================================
@@ -321,6 +330,40 @@ def my_subscription(m):
             f"4 - Вечная (2000 ₽)"
         )
 
+@bot.message_handler(commands=['deleteaccount'])
+def delete_account(m):
+    user_id = m.from_user.id
+    name, data = get_user_by_id(user_id)
+    
+    if not name:
+        bot.reply_to(m, "❌ Ты не зарегистрирован")
+        return
+    
+    bot.reply_to(m, 
+        f"⚠️ Ты уверен, что хочешь удалить аккаунт '{name}'?\n"
+        f"Это действие необратимо!\n\n"
+        f"Отправь /confirm_delete чтобы подтвердить."
+    )
+    pending_delete[user_id] = name
+
+@bot.message_handler(commands=['confirm_delete'])
+def confirm_delete(m):
+    user_id = m.from_user.id
+    
+    if user_id not in pending_delete:
+        bot.reply_to(m, "❌ Нет запроса на удаление. Используй /deleteaccount")
+        return
+    
+    name = pending_delete[user_id]
+    
+    if delete_user(name):
+        bot.reply_to(m, f"✅ Аккаунт '{name}' успешно удалён!")
+        bot.send_message(ADMIN_ID, f"🗑️ Пользователь {name} удалил свой аккаунт")
+    else:
+        bot.reply_to(m, "❌ Ошибка удаления")
+    
+    del pending_delete[user_id]
+
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
     if m.from_user.id != ADMIN_ID:
@@ -370,6 +413,23 @@ def remove(m):
     else:
         bot.reply_to(m, f"❌ {name} не найден")
 
+@bot.message_handler(commands=['deleteuser'])
+def delete_user_cmd(m):
+    if m.from_user.id != ADMIN_ID:
+        bot.reply_to(m, "⛔ Доступ запрещён")
+        return
+    
+    parts = m.text.split()
+    if len(parts) != 2:
+        bot.reply_to(m, "❌ /deleteuser имя")
+        return
+    
+    name = parts[1]
+    if delete_user(name):
+        bot.reply_to(m, f"✅ Пользователь {name} удалён")
+    else:
+        bot.reply_to(m, f"❌ Пользователь {name} не найден")
+
 @bot.message_handler(commands=['listusers'])
 def listu(m):
     if m.from_user.id != ADMIN_ID:
@@ -412,10 +472,12 @@ def help_cmd(m):
             "🤖 Команды админа:\n"
             "/giveaccess имя 1-4 - выдать доступ\n"
             "/removeaccess имя - отключить\n"
+            "/deleteuser имя - удалить пользователя\n"
             "/listusers - список пользователей\n"
             "/stats - статистика\n\n"
             "👤 Пользовательские:\n"
             "/register имя пароль - регистрация\n"
+            "/deleteaccount - удалить свой аккаунт\n"
             "/my - моя подписка\n"
             "/help - помощь"
         )
@@ -423,10 +485,11 @@ def help_cmd(m):
         bot.reply_to(m,
             "👤 Команды:\n"
             "/register имя пароль - регистрация\n"
+            "/deleteaccount - удалить свой аккаунт\n"
             "/my - моя подписка\n"
             "/help - помощь\n\n"
             "💬 Просто пиши сообщения, и я отвечу!\n"
-            "🌐 Также доступен сайт: https://pyai-vyzq.onrender.com"
+            "🌐 Сайт: https://pyai-vyzq.onrender.com"
         )
 
 # ============================================
