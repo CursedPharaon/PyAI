@@ -1,8 +1,8 @@
 import telebot
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask
+import threading
 import os
-import json
 import time
 
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
@@ -125,7 +125,7 @@ def ask_ai(question):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# ОБРАБОТЧИКИ КОМАНД
+# КОМАНДЫ БОТА
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -220,53 +220,40 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# ВЕБ-ХУК (ОСНОВНАЯ ЧАСТЬ)
+# ВЕБ-СЕРВЕР (чтобы Render не убивал)
 # ============================================
-@app.route('/', methods=['GET'])
+@app.route('/')
 def index():
     return "PyAI Bot is running! ✅"
 
-@app.route('/ping', methods=['GET'])
+@app.route('/ping')
 def ping():
     return "OK", 200
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        # Получаем JSON от Telegram
-        json_str = request.get_data().decode('UTF-8')
-        update_dict = json.loads(json_str)
-        
-        # Создаём объект Update
-        update = telebot.types.Update.de_json(update_dict)
-        
-        # Обрабатываем обновление
-        bot.process_new_updates([update])
-        
-        return "OK", 200
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        return "Error", 500
 
 # ============================================
 # ЗАПУСК
 # ============================================
-if __name__ == "__main__":
-    # Удаляем старый веб-хук
-    try:
-        bot.remove_webhook()
-        print("✅ Старый webhook удалён")
-    except Exception as e:
-        print(f"Ошибка удаления webhook: {e}")
-    
-    # Устанавливаем новый веб-хук
-    WEBHOOK_URL = "https://pyai-7edz.onrender.com/webhook"
-    try:
-        bot.set_webhook(url=WEBHOOK_URL)
-        print(f"✅ Webhook установлен: {WEBHOOK_URL}")
-    except Exception as e:
-        print(f"❌ Ошибка установки webhook: {e}")
-    
+def run_bot():
+    while True:
+        try:
+            print("🤖 Бот запущен (polling)...")
+            # Принудительно удаляем веб-хук
+            bot.remove_webhook()
+            time.sleep(1)
+            bot.polling(non_stop=True, interval=0)
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
+            time.sleep(5)
+
+def run_web():
     port = int(os.environ.get('PORT', 10000))
-    print(f"🚀 Запуск сервера на порту {port}")
+    print(f"🌐 Веб-сервер на порту {port}")
     app.run(host='0.0.0.0', port=port)
+
+if __name__ == "__main__":
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Запускаем веб-сервер
+    run_web()
