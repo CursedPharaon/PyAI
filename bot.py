@@ -5,7 +5,6 @@ import time
 import threading
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
-import hashlib
 
 # ============================================
 # НАСТРОЙКИ
@@ -13,7 +12,6 @@ import hashlib
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
 
-# JSONBin.io
 JSONBIN_KEY = "$2a$10$3T6Ssc3MDy8btFzOD4PTjOzciiAlCszOrB4zJDiorULg2BRrdPWRS"
 BIN_ID = "6a90a8efda38895dfe19be69"
 
@@ -42,7 +40,7 @@ PLANS = {
 }
 
 # ============================================
-# ФУНКЦИИ РАБОТЫ С JSONBin
+# ФУНКЦИИ РАБОТЫ С JSONBin (БЕЗ ХЕШИРОВАНИЯ)
 # ============================================
 def load_users():
     url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
@@ -70,15 +68,12 @@ def save_users(users):
         print(f"Ошибка сохранения: {e}")
         return False
 
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
 def create_user(username, password, user_id=None):
     users = load_users()
     if username in users:
         return False
     users[username] = {
-        "password": hash_password(password),
+        "password": password,  # Без хеширования!
         "user_id": str(user_id) if user_id else None,
         "status": "inactive",
         "plan": None,
@@ -102,7 +97,7 @@ def check_password(username, password):
     user = get_user_by_username(username)
     if not user:
         return False
-    return user.get("password") == hash_password(password)
+    return user.get("password") == password  # Сравниваем без хеширования
 
 def give_access(username, plan_key):
     users = load_users()
