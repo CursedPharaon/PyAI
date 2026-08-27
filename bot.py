@@ -14,32 +14,31 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 # ============================================
-# ПРОВЕРКА ПОДКЛЮЧЕНИЯ
+# ФУНКЦИИ РАБОТЫ С БАЗОЙ
 # ============================================
-def test_connection():
-    """Проверяет подключение к Supabase"""
-    url = f"{SUPABASE_URL}/rest/v1/users?limit=1"
+def user_exists(username):
+    """Проверяет, существует ли пользователь"""
+    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        print(f"🔍 Статус подключения: {r.status_code}")
-        print(f"📝 Ответ: {r.text[:200]}")
-        return r.status_code == 200
-    except Exception as e:
-        print(f"❌ Ошибка подключения: {e}")
+        if r.status_code == 200:
+            data = r.json()
+            return len(data) > 0
+        return False
+    except:
         return False
 
-def create_user_simple(username, user_id):
-    """Простое создание пользователя"""
+def create_user(username, user_id):
+    """Создаёт пользователя"""
     url = f"{SUPABASE_URL}/rest/v1/users"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
+        "Content-Type": "application/json"
     }
     data = {
         "username": username,
@@ -47,36 +46,126 @@ def create_user_simple(username, user_id):
         "status": "inactive"
     }
     try:
-        print(f"📤 Отправка: {data}")
         r = requests.post(url, json=data, headers=headers, timeout=10)
-        print(f"📥 Статус: {r.status_code}")
-        print(f"📥 Ответ: {r.text}")
+        print(f"Create user status: {r.status_code}, response: {r.text}")
         return r.status_code in [200, 201]
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"Create error: {e}")
         return False
 
-def list_users_simple():
-    """Простой список пользователей"""
-    url = f"{SUPABASE_URL}/rest/v1/users?select=*"
+def get_user_by_id(user_id):
+    """Получает пользователя по Telegram ID"""
+    url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=username,status,end_date"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
     try:
         r = requests.get(url, headers=headers, timeout=10)
-        print(f"📥 Список пользователей: {r.text}")
-        return r.json()
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                return data[0]["username"], data[0]
+        return None, None
+    except:
+        return None, None
+
+def get_status(username):
+    """Получает статус подписки"""
+    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=status,end_date"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data:
+                return data[0].get("status", "inactive")
+        return None
+    except:
+        return None
+
+def give_access(username, plan):
+    """Выдаёт доступ"""
+    days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
+    end_date = None
+    if days:
+        from datetime import datetime, timedelta
+        end_date = (datetime.now() + timedelta(days=days)).isoformat()
+    
+    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {"status": "active", "end_date": end_date}
+    try:
+        r = requests.patch(url, json=data, headers=headers, timeout=10)
+        return r.status_code == 200
+    except:
+        return False
+
+def list_users():
+    """Список всех пользователей"""
+    url = f"{SUPABASE_URL}/rest/v1/users?select=username,status,end_date"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            return [(item["username"], item["status"], item.get("end_date")) for item in data]
         return []
+    except:
+        return []
+
+# ============================================
+# OPENROUTER
+# ============================================
+def ask_ai(question):
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json={
+                "model": "openrouter/free",
+                "messages": [
+                    {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть."},
+                    {"role": "user", "content": question}
+                ]
+            },
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer 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'
+            },
+            timeout=30
+        )
+        r.raise_for_status()
+        return r.json()['choices'][0]['message']['content']
+    except Exception as e:
+        return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
 # КОМАНДЫ БОТА
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
-    bot.reply_to(m, "👋 Привет! Отправь /register Имя для регистрации")
+    user_id = m.from_user.id
+    name, data = get_user_by_id(user_id)
+    
+    if name:
+        status = get_status(name)
+        if status == "active":
+            bot.reply_to(m, f"✅ Привет, {name}! Подписка активна!")
+        else:
+            bot.reply_to(m, f"❌ Привет, {name}! Подписка неактивна.")
+        return
+    
+    bot.reply_to(m, "👋 Отправь /register Имя")
 
 @bot.message_handler(commands=['register'])
 def register(m):
@@ -88,27 +177,68 @@ def register(m):
     username = parts[1].strip()
     user_id = m.from_user.id
     
-    if create_user_simple(username, user_id):
+    # Проверяем, существует ли пользователь
+    if user_exists(username):
+        bot.reply_to(m, f"❌ Имя '{username}' уже занято")
+        return
+    
+    if create_user(username, user_id):
         bot.reply_to(m, f"✅ Регистрация успешна, {username}!")
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
-        bot.reply_to(m, "❌ Ошибка регистрации. Проверь логи.")
+        bot.reply_to(m, "❌ Ошибка регистрации. Попробуй позже.")
+
+@bot.message_handler(commands=['giveaccess'])
+def give(m):
+    if m.from_user.id != ADMIN_ID:
+        return
+    
+    parts = m.text.split()
+    if len(parts) != 3:
+        bot.reply_to(m, "❌ /giveaccess имя 1-4")
+        return
+    
+    name, plan = parts[1], parts[2]
+    if give_access(name, plan):
+        plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
+        bot.reply_to(m, f"✅ {name} получил доступ на {plan_names[plan]}")
+    else:
+        bot.reply_to(m, f"❌ {name} не найден")
 
 @bot.message_handler(commands=['listusers'])
 def listu(m):
     if m.from_user.id != ADMIN_ID:
         return
     
-    users = list_users_simple()
+    users = list_users()
     if not users:
         bot.reply_to(m, "📭 Нет пользователей")
         return
     
     text = "📋 Список:\n"
-    for user in users:
-        text += f"- {user['username']} | {user['status']}\n"
+    for name, status, end in users:
+        emoji = "✅" if status == "active" else "❌"
+        text += f"{emoji} {name} | {status}\n"
     
     bot.reply_to(m, text)
+
+@bot.message_handler(func=lambda m: True)
+def all_messages(m):
+    user_id = m.from_user.id
+    name, data = get_user_by_id(user_id)
+    
+    if not name:
+        bot.reply_to(m, "❌ Зарегистрируйся: /register Имя")
+        return
+    
+    status = get_status(name)
+    if status != "active":
+        bot.reply_to(m, "❌ Подписка неактивна. Напиши @cursed_pharaon")
+        return
+    
+    bot.reply_to(m, "🤔 Думаю...")
+    response = ask_ai(m.text)
+    bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
 # ВЕБ-СЕРВЕР
@@ -130,14 +260,6 @@ def run_web():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
-    print("🚀 Запуск...")
-    
-    # Проверяем подключение
-    if test_connection():
-        print("✅ Подключение к Supabase работает!")
-    else:
-        print("❌ Проблема с подключением к Supabase")
-    
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     run_web()
