@@ -2,12 +2,14 @@ import telebot
 import requests
 import json
 import os
+import threading
 from datetime import datetime, timedelta
+from flask import Flask, request, jsonify
 
 # ============================================
 # НАСТРОЙКИ
 # ============================================
-BOT_TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
+BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
 
 OPENROUTER_API_KEY = "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"
@@ -17,12 +19,12 @@ OPENROUTER_MODEL = "openrouter/free"
 USERS_FILE = "users.json"
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask(__name__)
 
 # ============================================
 # РАБОТА С JSON-ФАЙЛОМ
 # ============================================
 def load_users():
-    """Загружает пользователей из JSON-файла"""
     if not os.path.exists(USERS_FILE):
         return {}
     try:
@@ -32,17 +34,14 @@ def load_users():
         return {}
 
 def save_users(users):
-    """Сохраняет пользователей в JSON-файл"""
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=2, ensure_ascii=False)
 
 def get_user(username):
-    """Получает данные пользователя"""
     users = load_users()
     return users.get(username)
 
 def create_user(username):
-    """Создаёт нового пользователя"""
     users = load_users()
     if username in users:
         return False
@@ -55,7 +54,6 @@ def create_user(username):
     return True
 
 def give_access(username, plan):
-    """Выдаёт доступ"""
     users = load_users()
     if username not in users:
         return False
@@ -73,7 +71,6 @@ def give_access(username, plan):
     return True
 
 def remove_access(username):
-    """Отключает доступ"""
     users = load_users()
     if username not in users:
         return False
@@ -83,7 +80,6 @@ def remove_access(username):
     return True
 
 def get_user_status(username):
-    """Проверяет статус пользователя"""
     users = load_users()
     if username not in users:
         return None
@@ -92,7 +88,6 @@ def get_user_status(username):
     status = user.get("subscription_status", "inactive")
     end_date = user.get("subscription_end")
     
-    # Проверяем, не истёк ли срок
     if status == "active" and end_date:
         if datetime.now().isoformat() > end_date:
             user["subscription_status"] = "inactive"
@@ -103,13 +98,11 @@ def get_user_status(username):
     return status
 
 def list_users():
-    """Список всех пользователей"""
     users = load_users()
     return [(username, data["subscription_status"], data.get("subscription_end")) 
             for username, data in users.items()]
 
 def check_user_exists(username):
-    """Проверяет, существует ли пользователь"""
     users = load_users()
     return username in users
 
@@ -139,7 +132,7 @@ def ask_openrouter(prompt):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# КОМАНДЫ
+# КОМАНДЫ БОТА
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -265,8 +258,44 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 PyAI:\n{response[:4000]}")
 
 # ============================================
+# ВЕБ-СЕРВЕР (для Render)
+# ============================================
+@app.route('/')
+def index():
+    return "PyAI Bot is running!"
+
+@app.route('/register', methods=['POST'])
+def register():
+    username = request.form.get('username', '').strip()
+    if not username:
+        return "Введите имя", 400
+    
+    if len(username) < 2:
+        return "Имя должно быть не менее 2 символов", 400
+    
+    if check_user_exists(username):
+        return "Пользователь с таким именем уже существует", 400
+    
+    if create_user(username):
+        return "Регистрация успешна! Ожидайте активации.", 200
+    else:
+        return "Ошибка регистрации", 500
+
+# ============================================
 # ЗАПУСК
 # ============================================
-if __name__ == "__main__":
+def run_bot():
     print("🤖 Бот запущен!")
     bot.polling(non_stop=True)
+
+def run_web():
+    print("🌐 Веб-сервер запущен на порту 10000")
+    app.run(host='0.0.0.0', port=10000)
+
+if __name__ == "__main__":
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Запускаем веб-сервер
+    run_web()
