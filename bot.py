@@ -1,19 +1,26 @@
 import logging
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 import libsql_experimental as libsql
 from datetime import datetime, timedelta
-import asyncio
 import http.server
 import socketserver
 import threading
 import os
+import json
+import urllib.request
+import urllib.error
 
 # ============================================
 # НАСТРОЙКИ
 # ============================================
-TELEGRAM_TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
+TELEGRAM_TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"  # Получить у @BotFather
 ADMIN_ID = 8549857532  # Твой Telegram ID
+
+# OpenRouter API (твой ключ уже вставлен)
+OPENROUTER_API_KEY = "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"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODEL = "openrouter/free"  # Бесплатные модели
 
 # Turso DB
 DB_URL = "libsql://pyai-cursedd.aws-eu-west-1.turso.io"
@@ -113,6 +120,45 @@ def check_user_exists(email):
     cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
     return cursor.fetchone() is not None
 
+def get_user_by_email(email):
+    cursor.execute("SELECT id, email, subscription_status FROM users WHERE email = ?", (email,))
+    return cursor.fetchone()
+
+# ============================================
+# ФУНКЦИЯ ЗАПРОСА К OPENROUTER
+# ============================================
+def ask_openrouter(prompt):
+    """Отправляет запрос к OpenRouter и возвращает ответ"""
+    try:
+        data = {
+            "model": OPENROUTER_MODEL,
+            "messages": [
+                {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть. Отвечай полезно и понятно. Ты полностью бесплатна для всех пользователей."},
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        req = urllib.request.Request(
+            OPENROUTER_URL,
+            data=json.dumps(data).encode('utf-8'),
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+                'HTTP-Referer': 'https://t.me/PyAI_bot',
+                'X-Title': 'PyAI Bot'
+            }
+        )
+        
+        with urllib.request.urlopen(req, timeout=30) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            return result['choices'][0]['message']['content']
+    
+    except urllib.error.HTTPError as e:
+        error_text = e.read().decode('utf-8') if e.fp else str(e)
+        return f"⚠️ Ошибка API: {e.code} - {error_text[:200]}"
+    except Exception as e:
+        return f"⚠️ Ошибка: {str(e)[:200]}"
+
 # ============================================
 # КОМАНДЫ ТЕЛЕГРАМ-БОТА
 # ============================================
@@ -129,7 +175,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/removeaccess email@example.com - отключить доступ\n"
         "/listusers - список пользователей\n"
         "/checkuser email@example.com - проверить статус\n"
-        "/stats - статистика"
+        "/stats - статистика\n"
+        "/ask вопрос - спросить у PyAI"
     )
 
 async def give_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,6 +274,34 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"❌ Неактивных: {total - active}"
     )
 
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для теста OpenRouter"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return
+    
+    if not context.args:
+        await update.message.reply_text("❌ Использование: /ask вопрос")
+        return
+    
+    question = ' '.join(context.args)
+    await update.message.reply_text("🤔 Думаю...")
+    
+    response = ask_openrouter(question)
+    await update.message.reply_text(f"🧠 PyAI:\n{response[:4000]}")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка обычных сообщений (для пользователей с доступом)"""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ запрещён. Обратитесь к администратору.")
+        return
+    
+    await update.message.reply_text("🤔 Думаю...")
+    response = ask_openrouter(update.message.text)
+    await update.message.reply_text(f"🧠 PyAI:\n{response[:4000]}")
+
 # ============================================
 # ВЕБ-СЕРВЕР ДЛЯ HTML
 # ============================================
@@ -234,6 +309,22 @@ class MyHTTPHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/' or self.path == '/index.html':
             self.path = '/index.html'
+        elif self.path.startswith('/check-subscription'):
+            import urllib.parse
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            email = params.get('email', [''])[0]
+            
+            self.send_response(200)
+            self.end_headers()
+            
+            if email:
+                status = get_user_status(email)
+                self.wfile.write(json.dumps({'status': status or 'inactive'}).encode('utf-8'))
+            else:
+                self.wfile.write(json.dumps({'status': 'inactive'}).encode('utf-8'))
+            return
+        
         return http.server.SimpleHTTPRequestHandler.do_GET(self)
     
     def do_POST(self):
@@ -268,7 +359,7 @@ class MyHTTPHandler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(b'Registration failed')
     
     def log_message(self, format, *args):
-        pass  # Отключаем логи
+        pass
 
 def start_web_server():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -293,6 +384,10 @@ def main():
     app.add_handler(CommandHandler("listusers", list_users_command))
     app.add_handler(CommandHandler("checkuser", check_user_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("ask", ask_command))
+    
+    # Обработчик обычных сообщений
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🤖 Бот запущен!")
     app.run_polling()
