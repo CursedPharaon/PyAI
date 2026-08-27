@@ -3,6 +3,7 @@ import requests
 from flask import Flask
 import threading
 import os
+import time
 
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
@@ -14,10 +15,9 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 # ============================================
-# ФУНКЦИИ РАБОТЫ С БАЗОЙ
+# ФУНКЦИИ БАЗЫ
 # ============================================
 def user_exists(username):
-    """Проверяет, существует ли пользователь"""
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -33,7 +33,6 @@ def user_exists(username):
         return False
 
 def create_user(username, user_id):
-    """Создаёт пользователя"""
     url = f"{SUPABASE_URL}/rest/v1/users"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -47,14 +46,13 @@ def create_user(username, user_id):
     }
     try:
         r = requests.post(url, json=data, headers=headers, timeout=10)
-        print(f"Create user status: {r.status_code}, response: {r.text}")
+        print(f"Create user: {r.status_code}, {r.text}")
         return r.status_code in [200, 201]
     except Exception as e:
         print(f"Create error: {e}")
         return False
 
 def get_user_by_id(user_id):
-    """Получает пользователя по Telegram ID"""
     url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=username,status,end_date"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -71,7 +69,6 @@ def get_user_by_id(user_id):
         return None, None
 
 def get_status(username):
-    """Получает статус подписки"""
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=status,end_date"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -88,11 +85,10 @@ def get_status(username):
         return None
 
 def give_access(username, plan):
-    """Выдаёт доступ"""
+    from datetime import datetime, timedelta
     days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
     end_date = None
     if days:
-        from datetime import datetime, timedelta
         end_date = (datetime.now() + timedelta(days=days)).isoformat()
     
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}"
@@ -109,7 +105,6 @@ def give_access(username, plan):
         return False
 
 def list_users():
-    """Список всех пользователей"""
     url = f"{SUPABASE_URL}/rest/v1/users?select=username,status,end_date"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -140,7 +135,7 @@ def ask_ai(question):
             },
             headers={
                 'Content-Type': 'application/json',
-                'Authorization': f'Bearer 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'
+                'Authorization': 'Bearer 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'
             },
             timeout=30
         )
@@ -162,28 +157,27 @@ def start(m):
         if status == "active":
             bot.reply_to(m, f"✅ Привет, {name}! Подписка активна!")
         else:
-            bot.reply_to(m, f"❌ Привет, {name}! Подписка неактивна.")
+            bot.reply_to(m, f"❌ Привет, {name}! Подписка неактивна. Напиши @cursed_pharaon")
         return
     
-    bot.reply_to(m, "👋 Отправь /register Имя")
+    bot.reply_to(m, "👋 Отправь /register Имя для регистрации")
 
 @bot.message_handler(commands=['register'])
 def register(m):
     parts = m.text.split(maxsplit=1)
     if len(parts) != 2:
-        bot.reply_to(m, "❌ /register Имя")
+        bot.reply_to(m, "❌ Использование: /register Имя")
         return
     
     username = parts[1].strip()
     user_id = m.from_user.id
     
-    # Проверяем, существует ли пользователь
     if user_exists(username):
         bot.reply_to(m, f"❌ Имя '{username}' уже занято")
         return
     
     if create_user(username, user_id):
-        bot.reply_to(m, f"✅ Регистрация успешна, {username}!")
+        bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации.")
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
         bot.reply_to(m, "❌ Ошибка регистрации. Попробуй позже.")
@@ -245,18 +239,25 @@ def all_messages(m):
 # ============================================
 @app.route('/')
 def index():
-    return "PyAI Bot is running!"
+    users = list_users()
+    return f"PyAI Bot is running! 👥 Users: {len(users)}"
 
 @app.route('/ping')
 def ping():
     return "OK", 200
 
 def run_bot():
-    print("🤖 Бот запущен!")
-    bot.polling(non_stop=True)
+    while True:
+        try:
+            print("🤖 Бот запущен!")
+            bot.polling(non_stop=True, interval=0)
+        except Exception as e:
+            print(f"❌ Ошибка: {e}")
+            time.sleep(5)
 
 def run_web():
     port = int(os.environ.get('PORT', 10000))
+    print(f"🌐 Веб-сервер на порту {port}")
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
