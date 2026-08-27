@@ -6,21 +6,32 @@ import threading
 from flask import Flask
 
 # ============================================
-# НАСТРОЙКИ (ВСЁ ВСТАВЛЕНО)
+# НАСТРОЙКИ
 # ============================================
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
 
-# JSONBin.io - данные сохраняются в ОБЛАКЕ (НЕ ПРОПАДАЮТ)
+# JSONBin.io
 JSONBIN_KEY = "$2a$10$3T6Ssc3MDy8btFzOD4PTjOzciiAlCszOrB4zJDiorULg2BRrdPWRS"
-BIN_ID = "6a90a8efda38895dfe19be69"  # Твой ID
+BIN_ID = "6a90a8efda38895dfe19be69"
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 PORT = 10000
 
 # ============================================
-# ФУНКЦИИ РАБОТЫ С JSONBin (ОБЛАКО)
+# ПРИНУДИТЕЛЬНО УДАЛЯЕМ ВЕБ-ХУК
+# ============================================
+try:
+    bot.remove_webhook()
+    print("✅ Веб-хук удалён")
+except Exception as e:
+    print(f"⚠️ Ошибка удаления веб-хука: {e}")
+
+time.sleep(1)  # Даём время на удаление
+
+# ============================================
+# ФУНКЦИИ РАБОТЫ С JSONBin
 # ============================================
 def load_users():
     url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
@@ -74,7 +85,7 @@ def list_users():
     return [(username, data.get("status")) for username, data in users.items()]
 
 # ============================================
-# OPENROUTER (ИИ)
+# OPENROUTER
 # ============================================
 def ask_ai(question):
     try:
@@ -225,7 +236,7 @@ def ping():
     return "OK", 200
 
 def run_bot():
-    print("🤖 Бот запущен!")
+    print("🤖 Бот запущен (polling)!")
     bot.polling(non_stop=True)
 
 def run_web():
