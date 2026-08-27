@@ -1,8 +1,9 @@
 import telebot
 import requests
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import os
 import json
+import time
 
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
@@ -14,62 +15,30 @@ bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 # ============================================
-# ПРЯМОЙ SQL ЗАПРОС К SUPABASE (REST API)
+# ФУНКЦИИ БАЗЫ
 # ============================================
-def supabase_sql(sql):
-    """Выполняет SQL через REST API Supabase"""
-    url = f"{SUPABASE_URL}/rest/v1/rpc/execute_sql"
+def user_exists(username):
+    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username"
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            return len(r.json()) > 0
+        return False
+    except:
+        return False
+
+def create_user(username, user_id):
+    url = f"{SUPABASE_URL}/rest/v1/users"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Content-Type": "application/json"
     }
+    data = {"username": username, "user_id": str(user_id), "status": "inactive"}
     try:
-        r = requests.post(url, json={"query": sql}, headers=headers, timeout=10)
-        print(f"SQL: {sql[:100]}")
-        print(f"Status: {r.status_code}, Response: {r.text[:200]}")
-        return r.status_code == 200
-    except Exception as e:
-        print(f"SQL error: {e}")
-        return False
-
-# ============================================
-# РАБОТА С ПОЛЬЗОВАТЕЛЯМИ ЧЕРЕЗ REST API
-# ============================================
-def user_exists(username):
-    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        print(f"user_exists: {r.status_code}")
-        if r.status_code == 200:
-            return len(r.json()) > 0
-        return False
-    except Exception as e:
-        print(f"user_exists error: {e}")
-        return False
-
-def create_user(username, user_id):
-    """Создаёт пользователя через REST API"""
-    url = f"{SUPABASE_URL}/rest/v1/users"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-    }
-    data = {
-        "username": username,
-        "user_id": str(user_id),
-        "status": "inactive"
-    }
-    try:
-        print(f"Создаём пользователя: {username}")
         r = requests.post(url, json=data, headers=headers, timeout=10)
-        print(f"create_user: {r.status_code}, {r.text}")
+        print(f"create_user: {r.status_code}, {r.text[:200]}")
         return r.status_code in [200, 201]
     except Exception as e:
         print(f"create_user error: {e}")
@@ -77,10 +46,7 @@ def create_user(username, user_id):
 
 def get_user_by_id(user_id):
     url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=username,status,end_date"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
@@ -93,10 +59,7 @@ def get_user_by_id(user_id):
 
 def get_status(username):
     url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=status,end_date"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
@@ -127,10 +90,7 @@ def give_access(username, plan):
 
 def list_users():
     url = f"{SUPABASE_URL}/rest/v1/users?select=username,status,end_date"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}"
-    }
+    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
     try:
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
@@ -165,7 +125,7 @@ def ask_ai(question):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# КОМАНДЫ БОТА
+# ОБРАБОТЧИКИ КОМАНД
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
@@ -195,14 +155,17 @@ def register(m):
     print(f"===== РЕГИСТРАЦИЯ: {username} (user_id: {user_id}) =====")
     
     if user_exists(username):
+        print(f"Имя {username} уже занято")
         bot.reply_to(m, f"❌ Имя '{username}' уже занято")
         return
     
     if create_user(username, user_id):
+        print(f"✅ Регистрация успешна: {username}")
         bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации.")
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
-        bot.reply_to(m, "❌ Ошибка регистрации. Проверь логи.")
+        print(f"❌ Ошибка регистрации: {username}")
+        bot.reply_to(m, "❌ Ошибка регистрации. Попробуй позже.")
 
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
@@ -257,7 +220,7 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# ВЕБ-ХУК
+# ВЕБ-ХУК (ОСНОВНАЯ ЧАСТЬ)
 # ============================================
 @app.route('/', methods=['GET'])
 def index():
@@ -270,9 +233,16 @@ def ping():
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
+        # Получаем JSON от Telegram
         json_str = request.get_data().decode('UTF-8')
-        update = telebot.types.Update.de_json(json_str)
+        update_dict = json.loads(json_str)
+        
+        # Создаём объект Update
+        update = telebot.types.Update.de_json(update_dict)
+        
+        # Обрабатываем обновление
         bot.process_new_updates([update])
+        
         return "OK", 200
     except Exception as e:
         print(f"Webhook error: {e}")
@@ -282,11 +252,16 @@ def webhook():
 # ЗАПУСК
 # ============================================
 if __name__ == "__main__":
-    # Устанавливаем веб-хук
-    WEBHOOK_URL = f"https://pyai-7edz.onrender.com/webhook"
-    
+    # Удаляем старый веб-хук
     try:
         bot.remove_webhook()
+        print("✅ Старый webhook удалён")
+    except Exception as e:
+        print(f"Ошибка удаления webhook: {e}")
+    
+    # Устанавливаем новый веб-хук
+    WEBHOOK_URL = "https://pyai-7edz.onrender.com/webhook"
+    try:
         bot.set_webhook(url=WEBHOOK_URL)
         print(f"✅ Webhook установлен: {WEBHOOK_URL}")
     except Exception as e:
