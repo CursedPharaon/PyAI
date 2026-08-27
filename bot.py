@@ -1,104 +1,101 @@
 import telebot
-import requests
-from flask import Flask, request
 import os
-import json
+import threading
+import time
+from flask import Flask
 
 BOT_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
 ADMIN_ID = 8549857532
 
-SUPABASE_URL = "https://sycmhhibqeagzzfvjsdp.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN5Y21oaWlicWVhZ3p6ZnZqc2RwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4NTQ4ODAsImV4cCI6MjEwMzQzMDg4MH0.-isC-BKW5zvywzxTQ_IvUKBdWAONrIVocHbDsiYFaGk"
-
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
+USERS_FILE = "users.txt"
+PORT = 10000
+
 # ============================================
-# ФУНКЦИИ РАБОТЫ С SUPABASE
+# ФУНКЦИИ РАБОТЫ С ФАЙЛОМ
 # ============================================
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return {}
+    try:
+        with open(USERS_FILE, 'r', encoding='utf-8') as f:
+            users = {}
+            for line in f:
+                line = line.strip()
+                if line:
+                    parts = line.split('|')
+                    if len(parts) >= 3:
+                        username, user_id, status = parts[0], parts[1], parts[2]
+                        users[username] = {"user_id": user_id, "status": status}
+            return users
+    except:
+        return {}
+
+def save_users(users):
+    with open(USERS_FILE, 'w', encoding='utf-8') as f:
+        for username, data in users.items():
+            f.write(f"{username}|{data['user_id']}|{data['status']}\n")
+
+def user_exists(username):
+    users = load_users()
+    return username in users
+
 def create_user(username, user_id):
-    url = f"{SUPABASE_URL}/rest/v1/users"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {"username": username, "user_id": str(user_id), "status": "inactive"}
-    try:
-        r = requests.post(url, json=data, headers=headers, timeout=10)
-        print(f"create_user: {r.status_code} - {r.text}")
-        return r.status_code in [200, 201]
-    except Exception as e:
-        print(f"create_user error: {e}")
+    users = load_users()
+    if username in users:
         return False
+    users[username] = {"user_id": str(user_id), "status": "inactive"}
+    save_users(users)
+    return True
 
-def get_user(user_id):
-    url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=username,status"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                return data[0]["username"], data[0]["status"]
-        return None, None
-    except:
-        return None, None
+def get_user_by_id(user_id):
+    users = load_users()
+    for username, data in users.items():
+        if data["user_id"] == str(user_id):
+            return username, data["status"]
+    return None, None
 
-def give_access(username, plan):
-    from datetime import datetime, timedelta
-    days = {"1": 7, "2": 30, "3": 365, "4": None}.get(plan)
-    end_date = (datetime.now() + timedelta(days=days)).isoformat() if days else None
-    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}"
-    headers = {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {"status": "active", "end_date": end_date}
-    try:
-        r = requests.patch(url, json=data, headers=headers, timeout=10)
-        return r.status_code == 200
-    except:
+def give_access(username):
+    users = load_users()
+    if username not in users:
         return False
-
-def get_status(username):
-    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=status"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if data:
-                return data[0].get("status", "inactive")
-        return None
-    except:
-        return None
+    users[username]["status"] = "active"
+    save_users(users)
+    return True
 
 def list_users():
-    url = f"{SUPABASE_URL}/rest/v1/users?select=username,status"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200:
-            return [(item["username"], item["status"]) for item in r.json()]
-        return []
-    except:
-        return []
+    users = load_users()
+    return [(username, data["status"]) for username, data in users.items()]
 
 # ============================================
-# ОБРАБОТЧИКИ КОМАНД
+# АВТО-ПИНГ (каждые 5 минут)
+# ============================================
+def keep_alive():
+    url = f"http://localhost:{PORT}/ping"
+    while True:
+        try:
+            import requests
+            requests.get(url, timeout=5)
+            print(f"🔄 Пинг в {time.strftime('%H:%M:%S')}")
+        except Exception as e:
+            print(f"❌ Ошибка пинга: {e}")
+        time.sleep(300)  # 5 минут
+
+# ============================================
+# КОМАНДЫ БОТА
 # ============================================
 @bot.message_handler(commands=['start'])
 def start(m):
     user_id = m.from_user.id
-    name, status = get_user(user_id)
+    name, status = get_user_by_id(user_id)
     
     if name:
         if status == "active":
-            bot.reply_to(m, f"✅ Привет, {name}! Подписка активна!")
+            bot.reply_to(m, f"✅ Привет, {name}! Ты активен!")
         else:
-            bot.reply_to(m, f"❌ Привет, {name}! Подписка неактивна. Напиши @cursed_pharaon")
+            bot.reply_to(m, f"❌ Привет, {name}! Ты не активен. Напиши @cursed_pharaon")
         return
     
     bot.reply_to(m, "👋 Отправь /register Имя")
@@ -113,43 +110,37 @@ def register(m):
     username = parts[1].strip()
     user_id = m.from_user.id
     
-    # Проверяем, не существует ли пользователь с таким именем
-    url = f"{SUPABASE_URL}/rest/v1/users?username=eq.{username}&select=username"
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code == 200 and r.json():
-            bot.reply_to(m, f"❌ Имя '{username}' уже занято")
-            return
-    except:
-        pass
+    if user_exists(username):
+        bot.reply_to(m, f"❌ Имя '{username}' уже занято")
+        return
     
     if create_user(username, user_id):
-        bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации.")
+        bot.reply_to(m, f"✅ Регистрация успешна, {username}!")
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username}")
     else:
-        bot.reply_to(m, "❌ Ошибка регистрации. Проверь логи.")
+        bot.reply_to(m, "❌ Ошибка регистрации")
 
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
     if m.from_user.id != ADMIN_ID:
+        bot.reply_to(m, "⛔ Доступ запрещён")
         return
     
     parts = m.text.split()
-    if len(parts) != 3:
-        bot.reply_to(m, "❌ /giveaccess имя 1-4")
+    if len(parts) != 2:
+        bot.reply_to(m, "❌ /giveaccess имя")
         return
     
-    name, plan = parts[1], parts[2]
-    if give_access(name, plan):
-        plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
-        bot.reply_to(m, f"✅ {name} получил доступ на {plan_names[plan]}")
+    name = parts[1]
+    if give_access(name):
+        bot.reply_to(m, f"✅ {name} получил доступ")
     else:
         bot.reply_to(m, f"❌ {name} не найден")
 
 @bot.message_handler(commands=['listusers'])
 def listu(m):
     if m.from_user.id != ADMIN_ID:
+        bot.reply_to(m, "⛔ Доступ запрещён")
         return
     
     users = list_users()
@@ -164,21 +155,67 @@ def listu(m):
     
     bot.reply_to(m, text)
 
+@bot.message_handler(commands=['ask'])
+def ask(m):
+    user_id = m.from_user.id
+    name, status = get_user_by_id(user_id)
+    
+    if not name:
+        bot.reply_to(m, "❌ Сначала зарегистрируйся: /register Имя")
+        return
+    
+    if status != "active":
+        bot.reply_to(m, "❌ Ты не активен. Напиши @cursed_pharaon")
+        return
+    
+    parts = m.text.split(maxsplit=1)
+    if len(parts) != 2:
+        bot.reply_to(m, "❌ /ask вопрос")
+        return
+    
+    question = parts[1]
+    bot.reply_to(m, "🤔 Думаю...")
+    
+    try:
+        import requests
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json={
+                "model": "openrouter/free",
+                "messages": [
+                    {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть."},
+                    {"role": "user", "content": question}
+                ]
+            },
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer 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'
+            },
+            timeout=30
+        )
+        r.raise_for_status()
+        response = r.json()['choices'][0]['message']['content']
+        bot.reply_to(m, f"🧠 {response[:4000]}")
+    except Exception as e:
+        bot.reply_to(m, f"⚠️ Ошибка: {str(e)[:200]}")
+
 @bot.message_handler(func=lambda m: True)
 def all_messages(m):
     user_id = m.from_user.id
-    name, status = get_user(user_id)
+    name, status = get_user_by_id(user_id)
     
     if not name:
         bot.reply_to(m, "❌ Зарегистрируйся: /register Имя")
         return
     
     if status != "active":
-        bot.reply_to(m, "❌ Подписка неактивна. Напиши @cursed_pharaon")
+        bot.reply_to(m, "❌ Ты не активен. Напиши @cursed_pharaon")
         return
     
     bot.reply_to(m, "🤔 Думаю...")
+    
     try:
+        import requests
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             json={
@@ -201,46 +238,38 @@ def all_messages(m):
         bot.reply_to(m, f"⚠️ Ошибка: {str(e)[:200]}")
 
 # ============================================
-# ВЕБ-ХУК
+# ВЕБ-СЕРВЕР (для Render)
 # ============================================
-@app.route('/', methods=['GET'])
+@app.route('/')
 def index():
-    return "PyAI Bot is running! ✅"
+    users = load_users()
+    return f"PyAI Bot is running! 👥 Users: {len(users)}"
 
-@app.route('/ping', methods=['GET'])
+@app.route('/ping')
 def ping():
     return "OK", 200
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    try:
-        json_str = request.get_data().decode('UTF-8')
-        update_dict = json.loads(json_str)
-        update = telebot.types.Update.de_json(update_dict)
-        bot.process_new_updates([update])
-        return "OK", 200
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        return "Error", 500
+def run_bot():
+    print("🤖 Бот запущен (polling)!")
+    bot.polling(non_stop=True)
+
+def run_web():
+    print(f"🌐 Веб-сервер на порту {PORT}")
+    app.run(host='0.0.0.0', port=PORT)
 
 # ============================================
 # ЗАПУСК
 # ============================================
 if __name__ == "__main__":
-    # Удаляем старый webhook и ставим новый
-    try:
-        bot.remove_webhook()
-        print("✅ Старый webhook удалён")
-    except:
-        pass
+    print("🚀 Запуск...")
     
-    WEBHOOK_URL = "https://pyai-7edz.onrender.com/webhook"
-    try:
-        bot.set_webhook(url=WEBHOOK_URL)
-        print(f"✅ Webhook установлен: {WEBHOOK_URL}")
-    except Exception as e:
-        print(f"❌ Ошибка установки webhook: {e}")
+    # Запускаем авто-пинг
+    ping_thread = threading.Thread(target=keep_alive, daemon=True)
+    ping_thread.start()
     
-    port = int(os.environ.get('PORT', 10000))
-    print(f"🚀 Запуск сервера на порту {port}")
-    app.run(host='0.0.0.0', port=port)
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    bot_thread.start()
+    
+    # Запускаем веб-сервер (главный поток)
+    run_web()
