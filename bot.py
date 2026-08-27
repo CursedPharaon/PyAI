@@ -66,31 +66,6 @@ def list_users():
     return [(username, data["status"]) for username, data in users.items()]
 
 # ============================================
-# OPENROUTER
-# ============================================
-def ask_ai(question):
-    try:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            json={
-                "model": "openrouter/free",
-                "messages": [
-                    {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть."},
-                    {"role": "user", "content": question}
-                ]
-            },
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer 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'
-            },
-            timeout=30
-        )
-        r.raise_for_status()
-        return r.json()['choices'][0]['message']['content']
-    except Exception as e:
-        return f"⚠️ Ошибка: {str(e)[:200]}"
-
-# ============================================
 # ОБРАБОТЧИКИ КОМАНД
 # ============================================
 @bot.message_handler(commands=['start'])
@@ -170,8 +145,28 @@ def all_messages(m):
         return
     
     bot.reply_to(m, "🤔 Думаю...")
-    response = ask_ai(m.text)
-    bot.reply_to(m, f"🧠 {response[:4000]}")
+    
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json={
+                "model": "openrouter/free",
+                "messages": [
+                    {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть."},
+                    {"role": "user", "content": m.text}
+                ]
+            },
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer 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'
+            },
+            timeout=30
+        )
+        r.raise_for_status()
+        response = r.json()['choices'][0]['message']['content']
+        bot.reply_to(m, f"🧠 {response[:4000]}")
+    except Exception as e:
+        bot.reply_to(m, f"⚠️ Ошибка: {str(e)[:200]}")
 
 # ============================================
 # ВЕБ-ХУК
@@ -195,12 +190,23 @@ def webhook():
 # ЗАПУСК
 # ============================================
 if __name__ == "__main__":
-    # Удаляем веб-хук и ставим новый
-    bot.remove_webhook()
+    # Удаляем старый веб-хук
+    try:
+        bot.remove_webhook()
+        print("✅ Старый webhook удалён")
+    except:
+        pass
+    
     time.sleep(1)
     
-    WEBHOOK_URL = "https://pyai-7edz.onrender.com/webhook"
-    bot.set_webhook(url=WEBHOOK_URL)
-    print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+    # НОВАЯ ССЫЛКА
+    WEBHOOK_URL = "https://pyai-vyzq.onrender.com/webhook"
     
+    try:
+        bot.set_webhook(url=WEBHOOK_URL)
+        print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+    except Exception as e:
+        print(f"❌ Ошибка установки webhook: {e}")
+    
+    print(f"🚀 Запуск сервера на порту {PORT}")
     app.run(host='0.0.0.0', port=PORT)
