@@ -1,12 +1,11 @@
+
+
+
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-import libsql_client as libsql
-conn = libsql.create_client(sync_url=DB_URL, auth_token=DB_TOKEN)
+from libsql_client import create_client
 from datetime import datetime, timedelta
-import http.server
-import socketserver
-import threading
 import os
 import json
 import urllib.request
@@ -15,26 +14,23 @@ import urllib.error
 # ============================================
 # НАСТРОЙКИ
 # ============================================
-TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"  # Получить у @BotFather
-ADMIN_ID = 8549857532  # Твой Telegram ID
+TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"
+ADMIN_ID = 8549857532
 
-# OpenRouter API (твой ключ уже вставлен)
 OPENROUTER_API_KEY = "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"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL = "openrouter/free"  # Бесплатные модели
+OPENROUTER_MODEL = "openrouter/free"
 
-# Turso DB
 DB_URL = "libsql://pyai-cursedd.aws-eu-west-1.turso.io"
 DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4Mzg2OTAsImlkIjoiMDFhMDQzN2QtMmQwMS03ZjZmLTk1MDAtNTUzZTI5YzFjNmI1Iiwia2lkIjoicWpYbEhLbElGQmJNX29uRDlaWEkyWFVfazVBT3h3X3JIMF9TcUZ6MmU0ZyIsInJpZCI6IjZhMzk2M2ZkLWYzM2QtNGE2MS1hMTQwLTQyYWU1ZTExZWQ5NCJ9.2pxIFQ_FkjhaNgqU6Adj6pEOaSxRx_rVI6Jc8SdAbvLMYbXWxsyhH8q78TZKcCQ51m7RiitFUzfOGUr-2UalAg"
 
 # ============================================
 # ПОДКЛЮЧЕНИЕ К БАЗЕ
 # ============================================
-conn = libsql.connect("pyai.db", sync_url=DB_URL, auth_token=DB_TOKEN)
-cursor = conn.cursor()
+conn = create_client(sync_url=DB_URL, auth_token=DB_TOKEN)
 
 # Создаём таблицы
-cursor.execute("""
+conn.execute("""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
@@ -44,7 +40,6 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )
 """)
-conn.commit()
 
 logging.basicConfig(level=logging.INFO)
 
@@ -53,83 +48,74 @@ logging.basicConfig(level=logging.INFO)
 # ============================================
 def get_subscription_days(plan):
     plans = {
-        "1": 7,   # неделя
-        "2": 30,  # месяц
-        "3": 365, # год
-        "4": None # вечный
+        "1": 7,
+        "2": 30,
+        "3": 365,
+        "4": None
     }
     return plans.get(plan)
 
 def give_access(email, plan):
     days = get_subscription_days(plan)
     if days is None:
-        cursor.execute("""
+        conn.execute("""
             UPDATE users 
             SET subscription_status = 'active', subscription_end = NULL 
             WHERE email = ?
         """, (email,))
     else:
         end_date = (datetime.now() + timedelta(days=days)).isoformat()
-        cursor.execute("""
+        conn.execute("""
             UPDATE users 
             SET subscription_status = 'active', subscription_end = ? 
             WHERE email = ?
         """, (end_date, email))
-    conn.commit()
-    return cursor.rowcount > 0
+    return True
 
 def remove_access(email):
-    cursor.execute("""
+    conn.execute("""
         UPDATE users 
         SET subscription_status = 'inactive', subscription_end = NULL 
         WHERE email = ?
     """, (email,))
-    conn.commit()
-    return cursor.rowcount > 0
+    return True
 
 def get_user_status(email):
-    cursor.execute("""
+    result = conn.execute("""
         SELECT subscription_status, subscription_end FROM users WHERE email = ?
     """, (email,))
-    row = cursor.fetchone()
+    row = result.fetchone()
     if not row:
         return None
     status, end_date = row
     if status == 'active' and end_date:
         if datetime.now().isoformat() > end_date:
-            cursor.execute("UPDATE users SET subscription_status = 'inactive' WHERE email = ?", (email,))
-            conn.commit()
+            conn.execute("UPDATE users SET subscription_status = 'inactive' WHERE email = ?", (email,))
             return 'inactive'
     return status
 
 def list_users():
-    cursor.execute("SELECT email, subscription_status, subscription_end FROM users")
-    return cursor.fetchall()
+    result = conn.execute("SELECT email, subscription_status, subscription_end FROM users")
+    return result.fetchall()
 
 def register_user(email, password):
     try:
-        cursor.execute("""
+        conn.execute("""
             INSERT INTO users (email, password, subscription_status)
             VALUES (?, ?, 'inactive')
         """, (email, password))
-        conn.commit()
         return True
     except:
         return False
 
 def check_user_exists(email):
-    cursor.execute("SELECT id FROM users WHERE email = ?", (email,))
-    return cursor.fetchone() is not None
-
-def get_user_by_email(email):
-    cursor.execute("SELECT id, email, subscription_status FROM users WHERE email = ?", (email,))
-    return cursor.fetchone()
+    result = conn.execute("SELECT id FROM users WHERE email = ?", (email,))
+    return result.fetchone() is not None
 
 # ============================================
 # ФУНКЦИЯ ЗАПРОСА К OPENROUTER
 # ============================================
 def ask_openrouter(prompt):
-    """Отправляет запрос к OpenRouter и возвращает ответ"""
     try:
         data = {
             "model": OPENROUTER_MODEL,
@@ -161,21 +147,21 @@ def ask_openrouter(prompt):
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 # ============================================
-# КОМАНДЫ ТЕЛЕГРАМ-БОТА
+# КОМАНДЫ БОТА
 # ============================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Доступ запрещён. Только для администратора.")
+        await update.message.reply_text("⛔ Доступ запрещён.")
         return
     
     await update.message.reply_text(
         "👋 Привет, админ!\n\n"
         "📌 Команды:\n"
-        "/giveaccess email@example.com 1 - дать доступ (1-неделя, 2-месяц, 3-год, 4-вечный)\n"
-        "/removeaccess email@example.com - отключить доступ\n"
+        "/giveaccess email 1-4 - дать доступ (1-неделя, 2-месяц, 3-год, 4-вечный)\n"
+        "/removeaccess email - отключить доступ\n"
         "/listusers - список пользователей\n"
-        "/checkuser email@example.com - проверить статус\n"
+        "/checkuser email - проверить статус\n"
         "/stats - статистика\n"
         "/ask вопрос - спросить у PyAI"
     )
@@ -199,11 +185,9 @@ async def give_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Пользователь {email} не найден. Сначала зарегистрируйтесь на сайте.")
         return
     
-    if give_access(email, plan):
-        plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
-        await update.message.reply_text(f"✅ Доступ выдан на {plan_names[plan]} для {email}")
-    else:
-        await update.message.reply_text("❌ Ошибка при выдаче доступа")
+    give_access(email, plan)
+    plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
+    await update.message.reply_text(f"✅ Доступ выдан на {plan_names[plan]} для {email}")
 
 async def remove_access_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -216,10 +200,8 @@ async def remove_access_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     email = context.args[0]
-    if remove_access(email):
-        await update.message.reply_text(f"✅ Доступ отключён для {email}")
-    else:
-        await update.message.reply_text(f"❌ Пользователь {email} не найден")
+    remove_access(email)
+    await update.message.reply_text(f"✅ Доступ отключён для {email}")
 
 async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -263,10 +245,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
     
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
-    active = cursor.fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    active = conn.execute("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'").fetchone()[0]
     
     await update.message.reply_text(
         f"📊 Статистика:\n"
@@ -276,7 +256,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для теста OpenRouter"""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("⛔ Доступ запрещён.")
@@ -293,7 +272,6 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🧠 PyAI:\n{response[:4000]}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка обычных сообщений (для пользователей с доступом)"""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("⛔ Доступ запрещён. Обратитесь к администратору.")
@@ -304,79 +282,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🧠 PyAI:\n{response[:4000]}")
 
 # ============================================
-# ВЕБ-СЕРВЕР ДЛЯ HTML
-# ============================================
-class MyHTTPHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/' or self.path == '/index.html':
-            self.path = '/index.html'
-        elif self.path.startswith('/check-subscription'):
-            import urllib.parse
-            parsed = urllib.parse.urlparse(self.path)
-            params = urllib.parse.parse_qs(parsed.query)
-            email = params.get('email', [''])[0]
-            
-            self.send_response(200)
-            self.end_headers()
-            
-            if email:
-                status = get_user_status(email)
-                self.wfile.write(json.dumps({'status': status or 'inactive'}).encode('utf-8'))
-            else:
-                self.wfile.write(json.dumps({'status': 'inactive'}).encode('utf-8'))
-            return
-        
-        return http.server.SimpleHTTPRequestHandler.do_GET(self)
-    
-    def do_POST(self):
-        if self.path == '/register':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length).decode('utf-8')
-            
-            import urllib.parse
-            data = urllib.parse.parse_qs(post_data)
-            email = data.get('email', [''])[0]
-            password = data.get('password', [''])[0]
-            
-            if not email or not password:
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b'Email and password required')
-                return
-            
-            if check_user_exists(email):
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b'User already exists')
-                return
-            
-            if register_user(email, password):
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b'Registration successful! Wait for admin to activate your access.')
-            else:
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(b'Registration failed')
-    
-    def log_message(self, format, *args):
-        pass
-
-def start_web_server():
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    with socketserver.TCPServer(("", 8000), MyHTTPHandler) as httpd:
-        print("🌐 Веб-сервер запущен на http://localhost:8000")
-        httpd.serve_forever()
-
-# ============================================
 # ЗАПУСК
 # ============================================
 def main():
-    # Запускаем веб-сервер в отдельном потоке
-    web_thread = threading.Thread(target=start_web_server, daemon=True)
-    web_thread.start()
-    
-    # Запускаем Telegram-бота
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -386,8 +294,6 @@ def main():
     app.add_handler(CommandHandler("checkuser", check_user_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("ask", ask_command))
-    
-    # Обработчик обычных сообщений
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("🤖 Бот запущен!")
