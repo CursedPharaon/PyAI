@@ -1,50 +1,65 @@
 import logging
+import requests
+import json
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-from libsql_client import create_client
-from datetime import datetime, timedelta
-import json
-import urllib.request
-import urllib.error
 
 # ============================================
 # НАСТРОЙКИ
 # ============================================
-TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"  # Получить у @BotFather
+TELEGRAM_TOKEN = "8790410681:AAH8fYqJ0XYljg2QuPTVAorhew_qNN38rDk"  # ВСТАВЬ СВОЙ ТОКЕН
 ADMIN_ID = 8549857532
 
 OPENROUTER_API_KEY = "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"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "openrouter/free"
 
-DB_URL = "libsql://pyai-cursedd.aws-eu-west-1.turso.io"
-DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4Mzg2OTAsImlkIjoiMDFhMDQzN2QtMmQwMS03ZjZmLTk1MDAtNTUzZTI5YzFjNmI1Iiwia2lkIjoicWpYbEhLbElGQmJNX29uRDlaWEkyWFVfazVBT3h3X3JIMF9TcUZ6MmU0ZyIsInJpZCI6IjZhMzk2M2ZkLWYzM2QtNGE2MS1hMTQwLTQyYWU1ZTExZWQ5NCJ9.2pxIFQ_FkjhaNgqU6Adj6pEOaSxRx_rVI6Jc8SdAbvLMYbXWxsyhH8q78TZKcCQ51m7RiitFUzfOGUr-2UalAg"
-
-# ============================================
-# ПОДКЛЮЧЕНИЕ К БАЗЕ (ИСПРАВЛЕНО)
-# ============================================
-conn = create_client(
-    url=DB_URL,           # вместо sync_url используем url
-    auth_token=DB_TOKEN
-)
-
-# Создаём таблицы
-conn.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    subscription_status TEXT DEFAULT 'inactive',
-    subscription_end TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-)
-""")
+# Turso HTTP API
+TURSO_URL = "https://pyai-cursedd.aws-eu-west-1.turso.io"
+TURSO_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODc4Mzg2OTAsImlkIjoiMDFhMDQzN2QtMmQwMS03ZjZmLTk1MDAtNTUzZTI5YzFjNmI1Iiwia2lkIjoicWpYbEhLbElGQmJNX29uRDlaWEkyWFVfazVBT3h3X3JIMF9TcUZ6MmU0ZyIsInJpZCI6IjZhMzk2M2ZkLWYzM2QtNGE2MS1hMTQwLTQyYWU1ZTExZWQ5NCJ9.2pxIFQ_FkjhaNgqU6Adj6pEOaSxRx_rVI6Jc8SdAbvLMYbXWxsyhH8q78TZKcCQ51m7RiitFUzfOGUr-2UalAg"
 
 logging.basicConfig(level=logging.INFO)
 
 # ============================================
-# ФУНКЦИИ БАЗЫ
+# ФУНКЦИИ РАБОТЫ С TURSO ЧЕРЕЗ HTTP
 # ============================================
+def turso_query(sql, params=None):
+    """Выполняет SQL-запрос к Turso через HTTP API"""
+    url = f"{TURSO_URL}/v1/query"
+    headers = {
+        "Authorization": f"Bearer {TURSO_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    # Параметры для запроса
+    data = {
+        "sql": sql,
+        "params": params or {}
+    }
+    
+    try:
+        response = requests.post(url, json=data, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logging.error(f"Turso error: {e}")
+        return None
+
+def init_db():
+    """Создаёт таблицу пользователей"""
+    sql = """
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        subscription_status TEXT DEFAULT 'inactive',
+        subscription_end TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    turso_query(sql)
+
 def get_subscription_days(plan):
     plans = {
         "1": 7,
@@ -57,59 +72,76 @@ def get_subscription_days(plan):
 def give_access(email, plan):
     days = get_subscription_days(plan)
     if days is None:
-        conn.execute("""
+        sql = """
             UPDATE users 
             SET subscription_status = 'active', subscription_end = NULL 
             WHERE email = ?
-        """, (email,))
+        """
+        params = [email]
     else:
         end_date = (datetime.now() + timedelta(days=days)).isoformat()
-        conn.execute("""
+        sql = """
             UPDATE users 
             SET subscription_status = 'active', subscription_end = ? 
             WHERE email = ?
-        """, (end_date, email))
-    return True
+        """
+        params = [end_date, email]
+    
+    result = turso_query(sql, params)
+    return result is not None
 
 def remove_access(email):
-    conn.execute("""
+    sql = """
         UPDATE users 
         SET subscription_status = 'inactive', subscription_end = NULL 
         WHERE email = ?
-    """, (email,))
-    return True
+    """
+    result = turso_query(sql, [email])
+    return result is not None
 
 def get_user_status(email):
-    result = conn.execute("""
-        SELECT subscription_status, subscription_end FROM users WHERE email = ?
-    """, (email,))
-    row = result.fetchone()
-    if not row:
+    sql = "SELECT subscription_status, subscription_end FROM users WHERE email = ?"
+    result = turso_query(sql, [email])
+    if not result or not result.get('results'):
         return None
-    status, end_date = row
+    
+    rows = result['results'][0].get('rows', [])
+    if not rows:
+        return None
+    
+    status = rows[0][0]
+    end_date = rows[0][1] if len(rows[0]) > 1 else None
+    
     if status == 'active' and end_date:
         if datetime.now().isoformat() > end_date:
-            conn.execute("UPDATE users SET subscription_status = 'inactive' WHERE email = ?", (email,))
+            turso_query("UPDATE users SET subscription_status = 'inactive' WHERE email = ?", [email])
             return 'inactive'
     return status
 
 def list_users():
-    result = conn.execute("SELECT email, subscription_status, subscription_end FROM users")
-    return result.fetchall()
+    sql = "SELECT email, subscription_status, subscription_end FROM users"
+    result = turso_query(sql)
+    if not result or not result.get('results'):
+        return []
+    
+    rows = result['results'][0].get('rows', [])
+    return [(row[0], row[1], row[2] if len(row) > 2 else None) for row in rows]
 
 def register_user(email, password):
-    try:
-        conn.execute("""
-            INSERT INTO users (email, password, subscription_status)
-            VALUES (?, ?, 'inactive')
-        """, (email, password))
-        return True
-    except:
-        return False
+    sql = """
+        INSERT INTO users (email, password, subscription_status)
+        VALUES (?, ?, 'inactive')
+    """
+    result = turso_query(sql, [email, password])
+    return result is not None
 
 def check_user_exists(email):
-    result = conn.execute("SELECT id FROM users WHERE email = ?", (email,))
-    return result.fetchone() is not None
+    sql = "SELECT id FROM users WHERE email = ?"
+    result = turso_query(sql, [email])
+    if not result or not result.get('results'):
+        return False
+    rows = result['results'][0].get('rows', [])
+    return len(rows) > 0
 
 # ============================================
 # ФУНКЦИЯ ЗАПРОСА К OPENROUTER
@@ -124,24 +156,18 @@ def ask_openrouter(prompt):
             ]
         }
         
-        req = urllib.request.Request(
-            OPENROUTER_URL,
-            data=json.dumps(data).encode('utf-8'),
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-                'HTTP-Referer': 'https://t.me/PyAI_bot',
-                'X-Title': 'PyAI Bot'
-            }
-        )
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+            'HTTP-Referer': 'https://t.me/PyAI_bot',
+            'X-Title': 'PyAI Bot'
+        }
         
-        with urllib.request.urlopen(req, timeout=30) as response:
-            result = json.loads(response.read().decode('utf-8'))
-            return result['choices'][0]['message']['content']
+        response = requests.post(OPENROUTER_URL, json=data, headers=headers, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+        return result['choices'][0]['message']['content']
     
-    except urllib.error.HTTPError as e:
-        error_text = e.read().decode('utf-8') if e.fp else str(e)
-        return f"⚠️ Ошибка API: {e.code} - {error_text[:200]}"
     except Exception as e:
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
@@ -213,7 +239,7 @@ async def list_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("📭 Нет пользователей")
         return
     
-    text = "📋 Список:\n\n"
+    text = "📋 Список пользователей:\n\n"
     for email, status, end_date in users:
         status_emoji = "✅" if status == 'active' else "❌"
         end_str = f"до {end_date[:10]}" if end_date else "бессрочно"
@@ -244,8 +270,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещён.")
         return
     
-    total = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    active = conn.execute("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'").fetchone()[0]
+    result = turso_query("SELECT COUNT(*) FROM users")
+    total = result['results'][0]['rows'][0][0] if result and result.get('results') else 0
+    
+    result = turso_query("SELECT COUNT(*) FROM users WHERE subscription_status = 'active'")
+    active = result['results'][0]['rows'][0][0] if result and result.get('results') else 0
     
     await update.message.reply_text(
         f"📊 Статистика:\n"
@@ -283,6 +312,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ЗАПУСК
 # ============================================
 def main():
+    # Инициализируем БД
+    init_db()
+    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
