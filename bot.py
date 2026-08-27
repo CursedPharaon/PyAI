@@ -3,8 +3,10 @@ import requests
 import json
 import os
 import threading
+import time
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 
 # ============================================
 # НАСТРОЙКИ
@@ -17,12 +19,28 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = "openrouter/free"
 
 USERS_FILE = "users.json"
+PORT = 10000
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
+CORS(app)
 
 # ============================================
-# РАБОТА С JSON-ФАЙЛОМ
+# АВТО-ПИНГ (ЧТОБЫ НЕ ЗАСЫПАЛ)
+# ============================================
+def keep_alive():
+    """Каждые 5 минут пингует самого себя, чтобы Render не засыпал"""
+    url = f"http://localhost:{PORT}/ping"
+    while True:
+        try:
+            requests.get(url, timeout=5)
+            print(f"🔄 Пинг в {datetime.now().strftime('%H:%M:%S')}")
+        except Exception as e:
+            print(f"❌ Ошибка пинга: {e}")
+        time.sleep(300)  # 5 минут
+
+# ============================================
+# РАБОТА С ПОЛЬЗОВАТЕЛЯМИ
 # ============================================
 def load_users():
     if not os.path.exists(USERS_FILE):
@@ -37,12 +55,11 @@ def save_users(users):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=2, ensure_ascii=False)
 
-def create_user(username, user_id=None):
+def create_user(username):
     users = load_users()
     if username in users:
         return False
     users[username] = {
-        "user_id": user_id,
         "subscription_status": "inactive",
         "subscription_end": None,
         "created_at": datetime.now().isoformat()
@@ -135,7 +152,6 @@ def ask_openrouter(prompt):
 def start(m):
     user_id = m.from_user.id
     
-    # Если пользователь уже зарегистрирован
     users = load_users()
     username = None
     for name, data in users.items():
@@ -151,10 +167,9 @@ def start(m):
             bot.reply_to(m, f"❌ Привет, {username}! Твоя подписка неактивна. Для продления напиши @cursed_pharaon")
         return
     
-    # Если не зарегистрирован
     bot.reply_to(m, 
         "👋 Добро пожаловать в PyAI!\n\n"
-        "Чтобы начать пользоваться, зарегистрируйся на сайте или отправь /register Имя\n\n"
+        "Чтобы начать пользоваться, отправь /register Имя\n\n"
         "💡 Подписка активируется администратором.\n"
         "📩 Для продления подписки напишите @cursed_pharaon"
     )
@@ -173,13 +188,17 @@ def register(m):
         bot.reply_to(m, f"❌ Имя '{username}' уже занято")
         return
     
-    if create_user(username, user_id):
-        bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации от администратора.\n\n📩 Для продления подписки напишите @cursed_pharaon")
-        
-        # Уведомляем админа
-        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (ID: {user_id})")
-    else:
-        bot.reply_to(m, "❌ Ошибка регистрации")
+    users = load_users()
+    users[username] = {
+        "user_id": user_id,
+        "subscription_status": "inactive",
+        "subscription_end": None,
+        "created_at": datetime.now().isoformat()
+    }
+    save_users(users)
+    
+    bot.reply_to(m, f"✅ Регистрация успешна, {username}! Ожидай активации от администратора.\n\n📩 Для продления подписки напишите @cursed_pharaon")
+    bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (ID: {user_id})")
 
 @bot.message_handler(commands=['giveaccess'])
 def give(m):
@@ -201,7 +220,6 @@ def give(m):
     plan_names = {"1": "неделя", "2": "месяц", "3": "год", "4": "вечный"}
     bot.reply_to(m, f"✅ Доступ выдан на {plan_names[plan]} для {username}")
     
-    # Уведомляем пользователя
     users = load_users()
     user_id = users.get(username, {}).get("user_id")
     if user_id:
@@ -283,7 +301,6 @@ def ask(m):
 def all_messages(m):
     user_id = m.from_user.id
     
-    # Проверяем подписку
     users = load_users()
     username = None
     for name, data in users.items():
@@ -311,6 +328,31 @@ def all_messages(m):
 def index():
     return send_file('index.html')
 
+@app.route('/ping')
+def ping():
+    """Эндпоинт для авто-пинга"""
+    return "OK", 200
+
+@app.route('/chat', methods=['POST'])
+def chat():
+    """Чат на сайте"""
+    data = request.json
+    username = data.get('username', '').strip()
+    message = data.get('message', '').strip()
+    
+    if not username or not message:
+        return jsonify({'error': 'Введите имя и вопрос'}), 400
+    
+    status = get_user_status(username)
+    if status is None:
+        return jsonify({'error': 'Пользователь не найден. Зарегистрируйтесь.'}), 404
+    
+    if status != 'active':
+        return jsonify({'error': 'Подписка неактивна. Напишите @cursed_pharaon для продления.'}), 403
+    
+    response = ask_openrouter(message)
+    return jsonify({'response': response})
+
 @app.route('/register', methods=['POST'])
 def register_web():
     username = request.form.get('username', '').strip()
@@ -324,7 +366,6 @@ def register_web():
         return "Пользователь с таким именем уже существует", 400
     
     if create_user(username):
-        # Уведомляем админа
         bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (зарегистрирован через сайт)")
         return "Регистрация успешна! Ожидайте активации администратора.", 200
     else:
@@ -338,10 +379,17 @@ def run_bot():
     bot.polling(non_stop=True)
 
 def run_web():
-    print("🌐 Веб-сервер запущен на порту 10000")
-    app.run(host='0.0.0.0', port=10000)
+    print(f"🌐 Веб-сервер запущен на порту {PORT}")
+    app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == "__main__":
+    # Запускаем авто-пинг в отдельном потоке
+    ping_thread = threading.Thread(target=keep_alive, daemon=True)
+    ping_thread.start()
+    
+    # Запускаем бота в отдельном потоке
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
+    
+    # Запускаем веб-сервер
     run_web()
