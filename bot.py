@@ -30,6 +30,32 @@ time.sleep(1)
 pending_delete = {}
 
 # ============================================
+# ПАМЯТЬ: ХРАНИМ ИСТОРИЮ ДИАЛОГОВ
+# ============================================
+# Структура: {user_id: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+chat_history = {}
+MAX_HISTORY = 20  # Храним последние 20 сообщений
+
+def get_history(user_id):
+    """Получает историю диалога для пользователя"""
+    if user_id not in chat_history:
+        chat_history[user_id] = []
+    return chat_history[user_id]
+
+def add_to_history(user_id, role, content):
+    """Добавляет сообщение в историю"""
+    history = get_history(user_id)
+    history.append({"role": role, "content": content})
+    # Оставляем только последние MAX_HISTORY сообщений
+    if len(history) > MAX_HISTORY:
+        chat_history[user_id] = history[-MAX_HISTORY:]
+
+def clear_history(user_id):
+    """Очищает историю диалога"""
+    if user_id in chat_history:
+        chat_history[user_id] = []
+
+# ============================================
 # ПЛАНЫ ПОДПИСОК
 # ============================================
 PLANS = {
@@ -40,7 +66,7 @@ PLANS = {
 }
 
 # ============================================
-# ФУНКЦИИ РАБОТЫ С JSONBin (БЕЗ ХЕШИРОВАНИЯ)
+# ФУНКЦИИ РАБОТЫ С JSONBin
 # ============================================
 def load_users():
     url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
@@ -73,7 +99,7 @@ def create_user(username, password, user_id=None):
     if username in users:
         return False
     users[username] = {
-        "password": password,  # Без хеширования!
+        "password": password,
         "user_id": str(user_id) if user_id else None,
         "status": "inactive",
         "plan": None,
@@ -97,7 +123,7 @@ def check_password(username, password):
     user = get_user_by_username(username)
     if not user:
         return False
-    return user.get("password") == password  # Сравниваем без хеширования
+    return user.get("password") == password
 
 def give_access(username, plan_key):
     users = load_users()
@@ -207,18 +233,32 @@ def delete_user(username):
     return save_users(users)
 
 # ============================================
-# OPENROUTER
+# OPENROUTER С ПАМЯТЬЮ
 # ============================================
-def ask_ai(question):
+def ask_ai_with_history(user_id, question):
+    """Отправляет запрос к OpenRouter с учётом истории"""
     try:
+        # Получаем историю
+        history = get_history(user_id)
+        
+        # Формируем сообщения для API
+        messages = [
+            {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть. Отвечай полезно и понятно. Ты можешь играть в игры, викторины и поддерживать диалог. Запоминай, что говорил пользователь ранее."}
+        ]
+        
+        # Добавляем историю (последние 10 сообщений)
+        for msg in history[-10:]:
+            messages.append(msg)
+        
+        # Добавляем текущий вопрос
+        messages.append({"role": "user", "content": question})
+        
+        # Отправляем запрос
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             json={
                 "model": "openrouter/free",
-                "messages": [
-                    {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть. Отвечай полезно и понятно."},
-                    {"role": "user", "content": question}
-                ]
+                "messages": messages
             },
             headers={
                 'Content-Type': 'application/json',
@@ -227,9 +267,22 @@ def ask_ai(question):
             timeout=30
         )
         r.raise_for_status()
-        return r.json()['choices'][0]['message']['content']
+        response = r.json()['choices'][0]['message']['content']
+        
+        # Сохраняем в историю
+        add_to_history(user_id, "user", question)
+        add_to_history(user_id, "assistant", response)
+        
+        return response
     except Exception as e:
         return f"⚠️ Ошибка: {str(e)[:200]}"
+
+@bot.message_handler(commands=['clear'])
+def clear(m):
+    """Очищает историю диалога"""
+    user_id = m.from_user.id
+    clear_history(user_id)
+    bot.reply_to(m, "🧹 История диалога очищена!")
 
 # ============================================
 # КОМАНДЫ БОТА
@@ -250,7 +303,9 @@ def start(m):
                 f"✅ Привет, {name}!\n"
                 f"📊 Подписка: {info['plan']}\n"
                 f"{days_text}\n\n"
-                f"Просто напиши мне сообщение, и я отвечу!"
+                f"Просто напиши мне сообщение, и я отвечу!\n"
+                f"🧠 Я запоминаю нашу беседу, так что мы можем играть в игры и викторины!\n"
+                f"Команда /clear — очистить память"
             )
         else:
             bot.reply_to(m, 
@@ -354,6 +409,8 @@ def confirm_delete(m):
     if delete_user(name):
         bot.reply_to(m, f"✅ Аккаунт '{name}' успешно удалён!")
         bot.send_message(ADMIN_ID, f"🗑️ Пользователь {name} удалил свой аккаунт")
+        # Очищаем историю
+        clear_history(user_id)
     else:
         bot.reply_to(m, "❌ Ошибка удаления")
     
@@ -474,6 +531,7 @@ def help_cmd(m):
             "/register имя пароль - регистрация\n"
             "/deleteaccount - удалить свой аккаунт\n"
             "/my - моя подписка\n"
+            "/clear - очистить память бота\n"
             "/help - помощь"
         )
     else:
@@ -482,13 +540,14 @@ def help_cmd(m):
             "/register имя пароль - регистрация\n"
             "/deleteaccount - удалить свой аккаунт\n"
             "/my - моя подписка\n"
+            "/clear - очистить память бота\n"
             "/help - помощь\n\n"
-            "💬 Просто пиши сообщения, и я отвечу!\n"
-            "🌐 Сайт: https://pyai-vyzq.onrender.com"
+            "💬 Я запоминаю нашу беседу! Можем играть в викторины, игры и просто общаться.\n"
+            "🌐 Сайт: https://pyai-site.onrender.com"
         )
 
 # ============================================
-# ОБРАБОТКА ОБЫЧНЫХ СООБЩЕНИЙ
+# ОБРАБОТКА ОБЫЧНЫХ СООБЩЕНИЙ (С ПАМЯТЬЮ)
 # ============================================
 @bot.message_handler(func=lambda m: True)
 def all_messages(m):
@@ -508,11 +567,11 @@ def all_messages(m):
         return
     
     bot.reply_to(m, "🤔 Думаю...")
-    response = ask_ai(m.text)
+    response = ask_ai_with_history(user_id, m.text)
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# ВЕБ-СЕРВЕР (САЙТ)
+# ВЕБ-СЕРВЕР (САЙТ) С ПАМЯТЬЮ
 # ============================================
 @app.route('/')
 def index():
@@ -552,11 +611,23 @@ def register_web():
     if len(password) < 4:
         return jsonify({'success': False, 'error': 'Пароль должен быть не менее 4 символов'})
     
-    if create_user(username, password):
-        bot.send_message(ADMIN_ID, f"📝 Новый пользователь: {username} (через сайт)")
+    users = load_users()
+    if username in users:
+        return jsonify({'success': False, 'error': 'Имя уже занято'})
+    
+    users[username] = {
+        "password": password,
+        "user_id": None,
+        "status": "inactive",
+        "plan": None,
+        "end_date": None,
+        "created_at": datetime.now().isoformat()
+    }
+    
+    if save_users(users):
         return jsonify({'success': True, 'message': 'Регистрация успешна! Ожидайте активации.'})
     else:
-        return jsonify({'success': False, 'error': 'Имя уже занято'})
+        return jsonify({'success': False, 'error': 'Ошибка сохранения'})
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -571,7 +642,9 @@ def chat():
     if status != "active":
         return jsonify({'success': False, 'error': 'Подписка неактивна. Напишите @cursed_pharaon для продления'})
     
-    response = ask_ai(message)
+    # Для сайта тоже добавляем память (используем username как ID)
+    user_id = f"web_{username}"
+    response = ask_ai_with_history(user_id, message)
     return jsonify({'success': True, 'response': response})
 
 @app.route('/ping')
@@ -581,7 +654,7 @@ def ping():
 def keep_alive():
     urls = [
         f"http://localhost:{PORT}/ping",
-        f"https://pyai-vyzq.onrender.com/ping"
+        f"https://pyai-site.onrender.com/ping"
     ]
     while True:
         for url in urls:
