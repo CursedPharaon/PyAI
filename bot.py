@@ -30,28 +30,23 @@ time.sleep(1)
 pending_delete = {}
 
 # ============================================
-# ПАМЯТЬ: ХРАНИМ ИСТОРИЮ ДИАЛОГОВ
+# ПАМЯТЬ
 # ============================================
-# Структура: {user_id: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
 chat_history = {}
-MAX_HISTORY = 20  # Храним последние 20 сообщений
+MAX_HISTORY = 20
 
 def get_history(user_id):
-    """Получает историю диалога для пользователя"""
     if user_id not in chat_history:
         chat_history[user_id] = []
     return chat_history[user_id]
 
 def add_to_history(user_id, role, content):
-    """Добавляет сообщение в историю"""
     history = get_history(user_id)
     history.append({"role": role, "content": content})
-    # Оставляем только последние MAX_HISTORY сообщений
     if len(history) > MAX_HISTORY:
         chat_history[user_id] = history[-MAX_HISTORY:]
 
 def clear_history(user_id):
-    """Очищает историю диалога"""
     if user_id in chat_history:
         chat_history[user_id] = []
 
@@ -66,7 +61,7 @@ PLANS = {
 }
 
 # ============================================
-# ФУНКЦИИ РАБОТЫ С JSONBin
+# ФУНКЦИИ JSONBin
 # ============================================
 def load_users():
     url = f"https://api.jsonbin.io/v3/b/{BIN_ID}"
@@ -236,24 +231,18 @@ def delete_user(username):
 # OPENROUTER С ПАМЯТЬЮ
 # ============================================
 def ask_ai_with_history(user_id, question):
-    """Отправляет запрос к OpenRouter с учётом истории"""
     try:
-        # Получаем историю
         history = get_history(user_id)
         
-        # Формируем сообщения для API
         messages = [
             {"role": "system", "content": "Ты — PyAI, дружелюбная нейросеть. Отвечай полезно и понятно. Ты можешь играть в игры, викторины и поддерживать диалог. Запоминай, что говорил пользователь ранее."}
         ]
         
-        # Добавляем историю (последние 10 сообщений)
         for msg in history[-10:]:
             messages.append(msg)
         
-        # Добавляем текущий вопрос
         messages.append({"role": "user", "content": question})
         
-        # Отправляем запрос
         r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             json={
@@ -269,20 +258,12 @@ def ask_ai_with_history(user_id, question):
         r.raise_for_status()
         response = r.json()['choices'][0]['message']['content']
         
-        # Сохраняем в историю
         add_to_history(user_id, "user", question)
         add_to_history(user_id, "assistant", response)
         
         return response
     except Exception as e:
         return f"⚠️ Ошибка: {str(e)[:200]}"
-
-@bot.message_handler(commands=['clear'])
-def clear(m):
-    """Очищает историю диалога"""
-    user_id = m.from_user.id
-    clear_history(user_id)
-    bot.reply_to(m, "🧹 История диалога очищена!")
 
 # ============================================
 # КОМАНДЫ БОТА
@@ -409,7 +390,6 @@ def confirm_delete(m):
     if delete_user(name):
         bot.reply_to(m, f"✅ Аккаунт '{name}' успешно удалён!")
         bot.send_message(ADMIN_ID, f"🗑️ Пользователь {name} удалил свой аккаунт")
-        # Очищаем историю
         clear_history(user_id)
     else:
         bot.reply_to(m, "❌ Ошибка удаления")
@@ -516,6 +496,12 @@ def stats(m):
         f"❌ Неактивных: {total - active}"
     )
 
+@bot.message_handler(commands=['clear'])
+def clear(m):
+    user_id = m.from_user.id
+    clear_history(user_id)
+    bot.reply_to(m, "🧹 История диалога очищена!")
+
 @bot.message_handler(commands=['help'])
 def help_cmd(m):
     user_id = m.from_user.id
@@ -547,7 +533,7 @@ def help_cmd(m):
         )
 
 # ============================================
-# ОБРАБОТКА ОБЫЧНЫХ СООБЩЕНИЙ (С ПАМЯТЬЮ)
+# ОБРАБОТКА ОБЫЧНЫХ СООБЩЕНИЙ
 # ============================================
 @bot.message_handler(func=lambda m: True)
 def all_messages(m):
@@ -571,7 +557,7 @@ def all_messages(m):
     bot.reply_to(m, f"🧠 {response[:4000]}")
 
 # ============================================
-# ВЕБ-СЕРВЕР (САЙТ) С ПАМЯТЬЮ
+# ВЕБ-СЕРВЕР
 # ============================================
 @app.route('/')
 def index():
@@ -642,19 +628,32 @@ def chat():
     if status != "active":
         return jsonify({'success': False, 'error': 'Подписка неактивна. Напишите @cursed_pharaon для продления'})
     
-    # Для сайта тоже добавляем память (используем username как ID)
     user_id = f"web_{username}"
     response = ask_ai_with_history(user_id, message)
     return jsonify({'success': True, 'response': response})
+
+@app.route('/clear_history', methods=['POST'])
+def clear_history_route():
+    data = request.json
+    username = data.get('username', '').strip()
+    if not username:
+        return jsonify({'success': False, 'error': 'Имя не указано'})
+    
+    user_id = f"web_{username}"
+    clear_history(user_id)
+    return jsonify({'success': True, 'message': 'История очищена'})
 
 @app.route('/ping')
 def ping():
     return "OK", 200
 
+# ============================================
+# УСИЛЕННЫЙ АВТО-ПИНГ
+# ============================================
 def keep_alive():
     urls = [
         f"http://localhost:{PORT}/ping",
-        f"https://pyai-site.onrender.com/ping"
+        "https://pyai-site.onrender.com/ping"
     ]
     while True:
         for url in urls:
@@ -663,7 +662,7 @@ def keep_alive():
                 print(f"🔄 Пинг {url} -> {r.status_code}")
             except Exception as e:
                 print(f"❌ Ошибка пинга: {e}")
-        time.sleep(120)
+        time.sleep(120)  # 2 минуты
 
 def run_bot():
     print("🤖 Бот запущен!")
@@ -672,6 +671,9 @@ def run_bot():
 def run_web():
     app.run(host='0.0.0.0', port=PORT)
 
+# ============================================
+# ЗАПУСК
+# ============================================
 if __name__ == "__main__":
     print("🚀 Запуск PyAI Bot...")
     
